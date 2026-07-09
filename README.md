@@ -86,29 +86,30 @@ modo incremental recupera na próxima rodada. Nada quebra.
 ## Quickstart (~10 min)
 
 ```bash
-# 1. Clonar
+# 1. Clonar e instalar
 git clone https://github.com/Rhaiderr/polaris.git && cd polaris
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 
 # 2. Configurar o endpoint do modelo
 cp .env.example .env
 $EDITOR .env            # ajuste LLM_BASE_URL e LLM_MODEL
 
-# 3. Definir suas categorias (labels reais do Gmail)
-cp config/categorias.yaml.example config/categorias.yaml
-$EDITOR config/categorias.yaml
+# 3. Credenciais OAuth (uma vez) — veja docs/gerar-credenciais-gmail.md
+#    Baixe o credentials.json (OAuth Desktop) para config/credentials.json
 
-# 4. Credenciais OAuth (uma vez) — veja docs/gerar-credenciais-gmail.md
-#    Baixe o credentials.json (OAuth Desktop) para config/ e faça o login:
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m src.orquestrador --login       # gera config/token.json
+# 4. Adicionar sua conta (login + categorias iniciais em UM comando)
+python -m src.orquestrador --login              # cria a conta 'principal'
+$EDITOR config/principal/categorias.yaml        # ajuste com as SUAS labels do Gmail
 
 # 5. Ver a triagem SEM aplicar nada
-python -m src.orquestrador --modo completo --dry-run --max 30
+python -m src.orquestrador --dry-run --modo completo --max 30
 ```
 
 Confira as linhas `[DRY]` — cada uma mostra a categoria, a confiança e a ação
 que o Polaris *tomaria*. Nada é aplicado em `--dry-run`.
+
+O `--login` faz tudo de uma vez: cria `config/principal/`, gera o token, semeia
+um `categorias.yaml` inicial e mostra o próximo passo.
 
 > **Login OAuth em máquina headless / via SSH:** o `--login` sobe um servidor
 > local na porta `OAUTH_PORT` (default 8765) e imprime a URL sem abrir
@@ -124,16 +125,32 @@ que o Polaris *tomaria*. Nada é aplicado em `--dry-run`.
 
 ```bash
 python -m src.orquestrador [opções]
+  --conta NOME                    qual conta processar (config/NOME/).
+                                  Omitido: TODAS as contas configuradas
   --modo {incremental,completo}   incremental (padrão) usa a History API;
                                   completo varre o backlog inteiro
   --dry-run                       não aplica nada; só mostra o que faria
   --reprocessar                   reprocessa mensagens já marcadas Processado
   --max N                         limita quantas mensagens processar
-  --login                         faz o 1º login OAuth e sai
+  --login                         adiciona/reautentica uma conta e sai
 ```
 
 Na 1ª execução incremental, o Polaris só **fixa o cursor** (bootstrap) e não
 processa nada. Use `--modo completo` para o backlog existente.
+
+### Múltiplas contas
+
+Cada conta é um perfil independente em `config/<conta>/` (token, categorias e
+estado próprios); o `credentials.json` é **compartilhado** (um app OAuth
+autoriza várias contas Google). Adicionar outra conta é **um comando**:
+
+```bash
+python -m src.orquestrador --conta trabalho --login   # abre o login e semeia as categorias
+$EDITOR config/trabalho/categorias.yaml
+```
+
+Rode uma conta com `--conta trabalho`, ou **todas de uma vez** omitindo `--conta`
+(o padrão — perfeito para o timer processar cada conta em sequência).
 
 ### Docker (recomendado para o dia a dia)
 
@@ -194,8 +211,8 @@ execução — aponte para o seu próprio script (o Polaris não embute isso).
 | `LOG_RETENCAO_DIAS` | `90` | Retenção do `decisoes.jsonl`. |
 | `OAUTH_PORT` | `8765` | Porta do servidor de login OAuth. |
 
-As **categorias** ficam em `config/categorias.yaml` (gitignored — nomes de
-labels são dado pessoal). Cada categoria tem `nome`, `descricao` (orienta o
+As **categorias** ficam em `config/<conta>/categorias.yaml` (gitignored — nomes
+de labels são dado pessoal). Cada categoria tem `nome`, `descricao` (orienta o
 modelo) e as flags `permitir_exclusao` / `arquivar_permitido`. Trocar
 categorias **não** exige mexer em Python.
 
@@ -207,7 +224,7 @@ categorias **não** exige mexer em Python.
 |---------|----------------|
 | `Endpoint LLM indisponível. Pulando.` | O modelo/endpoint não respondeu. O Polaris pula (exit 0); rode de novo com o modelo no ar. |
 | Container não alcança o modelo em `localhost` | Dentro do container, `localhost` é o próprio container. Use `host.docker.internal` (modelo no host) ou o IP da LAN. |
-| `Sem token OAuth válido` | Faltou `--login` ou o `config/token.json` não está no lugar. |
+| `Sem token OAuth válido` / `Conta sem login` | Faltou o `--login` daquela conta (o token fica em `config/<conta>/token.json`). |
 | Login OK mas para em ~7 dias | App OAuth ficou em *Testing*. Publique **"In production"** (o refresh token deixa de expirar). Veja o tutorial. |
 | `credentials.json não encontrado` | O JSON baixado não foi salvo em `config/credentials.json`. |
 
@@ -216,9 +233,10 @@ categorias **não** exige mexer em Python.
 ## Segurança e privacidade
 
 - Escopo mínimo `gmail.modify`; nunca `send` nem `delete` permanente.
-- Nada sensível é versionado: `credentials.json`, `token.json`, `.env`,
-  `config/categorias.yaml`, `config/state.json` e `logs/` são gitignored.
-  O repositório traz apenas os `.example` genéricos.
+- Nada sensível é versionado: o `.gitignore` ignora **tudo** em `config/`
+  (o `credentials.json` compartilhado e as pastas por-conta `config/<conta>/`
+  com `token.json`, `categorias.yaml` e `state.json`), além do `.env` e de
+  `logs/`. O repositório traz apenas os `.example` genéricos.
 - O corpo do email é tratado como **entrada não confiável**: o classificador
   delimita o conteúdo e instrui o modelo a ignorar comandos vindos de dentro
   dele (defesa contra prompt injection), com guardrails determinísticos como
