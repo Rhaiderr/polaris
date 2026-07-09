@@ -1,0 +1,7 @@
+# Imagens base por arquitetura (base-python já traz s6-overlay + bashio).
+# Docs: https://developers.home-assistant.io/docs/add-ons/configuration#add-on-extended-build
+build_from:
+  aarch64: ghcr.io/home-assistant/aarch64-base-python:3.12-alpine3.20
+  amd64: ghcr.io/home-assistant/amd64-base-python:3.12-alpine3.20
+labels:
+  org.opencontainers.image.source: https://github.com/Rhaiderr/polaris

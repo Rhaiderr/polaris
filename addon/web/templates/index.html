@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block titulo %}Início{% endblock %}
+{% block conteudo %}
+<h1>Bem-vindo ao Polaris</h1>
+<p class="lead">Configure em 4 passos e deixe a triagem rodar sozinha. O trabalho
+pesado (o modelo) roda no endpoint que você escolher — nada sai da sua rede.</p>
+
+<div class="card">
+  <div class="row" style="justify-content: space-between;">
+    <strong>Credenciais OAuth (compartilhadas)</strong>
+    {% if credenciais_ok %}
+      <span class="pill ok">configuradas</span>
+    {% else %}
+      <span class="pill no">faltando</span>
+    {% endif %}
+  </div>
+  {% if not credenciais_ok %}
+  <p class="muted">Coloque o <code>credentials.json</code> do Google em
+  <code>/config</code> (add-on) ou em <code>config/</code> (local). Veja o passo 1.</p>
+  {% endif %}
+</div>
+
+<h2>Contas</h2>
+{% if contas %}
+<div class="card">
+  <table>
+    <tr><th>Conta</th><th>Token</th><th>Categorias</th><th>Sugestões</th></tr>
+    {% for c in contas %}
+    <tr>
+      <td>{{ c.nome }}</td>
+      <td>{% if c.tem_token %}<span class="pill ok">ok</span>{% else %}<span class="pill no">sem login</span>{% endif %}</td>
+      <td>{{ c.categorias }}</td>
+      <td>{% if c.tem_sugestoes %}<span class="pill ok">geradas</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% else %}
+<div class="msg info">Nenhuma conta configurada ainda. Comece pelo
+  <a href="{{ url_for('conta') }}">passo 1</a>.</div>
+{% endif %}
+
+<h2>Rodar agora</h2>
+<div class="card">
+  <p class="muted">Executa a triagem de todas as contas configuradas. Use o modo
+  simulação para ver o que ele faria sem tocar no Gmail.</p>
+  <div class="row">
+    <label class="row" style="font-weight:400;">
+      <input type="checkbox" id="dry"> simulação (dry-run)
+    </label>
+    <button id="btn-rodar">Rodar triagem</button>
+  </div>
+  <div id="job" style="display:none;">
+    <p class="muted" id="job-nome"></p>
+    <pre class="log" id="job-log"></pre>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const btn = document.getElementById('btn-rodar');
+const jobBox = document.getElementById('job');
+const jobNome = document.getElementById('job-nome');
+const jobLog = document.getElementById('job-log');
+let timer = null;
+
+async function poll() {
+  const r = await fetch("{{ url_for('job_status') }}");
+  const s = await r.json();
+  if (s.nome) {
+    jobBox.style.display = 'block';
+    jobNome.textContent = s.rodando ? `▶ ${s.nome} (rodando…)`
+      : `✔ ${s.nome} (finalizado, código ${s.returncode})`;
+    jobLog.textContent = s.log || '';
+    jobLog.scrollTop = jobLog.scrollHeight;
+  }
+  if (!s.rodando) { clearInterval(timer); timer = null; btn.disabled = false; }
+}
+
+btn.addEventListener('click', async () => {
+  btn.disabled = true;
+  const fd = new FormData();
+  if (document.getElementById('dry').checked) fd.append('dry_run', 'on');
+  const r = await fetch("{{ url_for('rodar') }}", { method: 'POST', body: fd });
+  const j = await r.json();
+  if (!j.ok) { alert(j.msg); btn.disabled = false; return; }
+  if (!timer) timer = setInterval(poll, 1500);
+  poll();
+});
+</script>
+{% endblock %}

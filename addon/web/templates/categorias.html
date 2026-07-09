@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block titulo %}Categorias{% endblock %}
+{% block conteudo %}
+<h1>3. Sugestões de categorias</h1>
+<p class="lead">O modelo lê só remetente e assunto de uma amostra da caixa (nunca o
+corpo) e propõe categorias novas. Você escolhe quais aceitar — nada é criado sem o
+seu aceite, e novas categorias nunca ganham permissão de exclusão automática.</p>
+
+<form method="get" class="card">
+  <div class="row">
+    <label style="margin:0;">Conta</label>
+    <select name="conta" onchange="this.form.submit()">
+      {% for c in contas %}
+      <option value="{{ c.nome }}" {{ 'selected' if c.nome == conta_sel else '' }}>{{ c.nome }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</form>
+
+<div class="card">
+  <div class="row">
+    <button id="btn-varrer">Varrer a caixa e sugerir</button>
+    <span class="muted">amostra os ~120 emails mais recentes</span>
+  </div>
+  <div id="job" style="display:none; margin-top:12px;">
+    <p class="muted" id="job-nome"></p>
+    <pre class="log" id="job-log"></pre>
+  </div>
+</div>
+
+{% if sugestoes %}
+<h2>Sugestões para <code>{{ conta_sel }}</code></h2>
+<form method="post" action="{{ url_for('categorias_aceitar') }}" class="card">
+  <input type="hidden" name="conta" value="{{ conta_sel }}">
+  {% for s in sugestoes %}
+  <label class="check">
+    <input type="checkbox" name="aceitar" value="{{ loop.index }}">
+    <span>
+      <span class="nome">{{ s.nome }}</span>
+      <span class="muted">(~{{ s.quantos }} emails)</span><br>
+      <span class="desc">{{ s.descricao }}</span>
+    </span>
+  </label>
+  {% endfor %}
+  <div style="margin-top:14px;">
+    <button type="submit">Aceitar selecionadas</button>
+  </div>
+</form>
+{% elif conta_sel %}
+<p class="muted">Nenhuma sugestão gerada ainda para <code>{{ conta_sel }}</code>.
+Clique em “Varrer a caixa e sugerir”.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const contaSel = "{{ conta_sel }}";
+const btn = document.getElementById('btn-varrer');
+const jobBox = document.getElementById('job');
+const jobNome = document.getElementById('job-nome');
+const jobLog = document.getElementById('job-log');
+let timer = null;
+
+async function poll() {
+  const r = await fetch("{{ url_for('job_status') }}");
+  const s = await r.json();
+  if (s.nome) {
+    jobBox.style.display = 'block';
+    jobNome.textContent = s.rodando ? `▶ ${s.nome} (rodando…)`
+      : `✔ ${s.nome} (código ${s.returncode})`;
+    jobLog.textContent = s.log || '';
+    jobLog.scrollTop = jobLog.scrollHeight;
+  }
+  if (!s.rodando) {
+    clearInterval(timer); timer = null; btn.disabled = false;
+    if (s.nome && s.returncode === 0) location.reload();
+  }
+}
+
+btn.addEventListener('click', async () => {
+  btn.disabled = true;
+  const fd = new FormData();
+  fd.append('conta', contaSel);
+  fd.append('max', '120');
+  const r = await fetch("{{ url_for('categorias_varrer') }}", { method: 'POST', body: fd });
+  const j = await r.json();
+  if (!j.ok) { alert(j.msg); btn.disabled = false; return; }
+  if (!timer) timer = setInterval(poll, 1500);
+  poll();
+});
+</script>
+{% endblock %}

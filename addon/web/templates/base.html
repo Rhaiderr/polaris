@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Polaris — {% block titulo %}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <a href="{{ url_for('index') }}" class="marca">🧭 Polaris</a>
+    <span class="sub">Triagem de Gmail com LLM local</span>
+  </header>
+
+  {% if passos %}
+  <nav class="passos">
+    {% for p in passos %}
+      <a href="{{ url_for(p.slug) }}" class="{{ 'ativo' if p.ativo else '' }}">{{ p.rotulo }}</a>
+    {% endfor %}
+  </nav>
+  {% endif %}
+
+  <main>
+    {% block conteudo %}{% endblock %}
+  </main>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>
