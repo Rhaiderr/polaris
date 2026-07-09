@@ -1,0 +1,27 @@
+# === Segredos e estado (NUNCA commitar) ===
+config/credentials.json
+config/token.json
+config/state.json
+.env
+
+# === Dados pessoais (labels reais revelam moradia/estudos/investimentos) ===
+# Versionar apenas config/categorias.yaml.example com categorias genéricas.
+config/categorias.yaml
+
+# === Logs (contêm remetentes/assuntos reais) ===
+logs/
+
+# === Notas locais de contexto (remetentes reais + IPs internos) ===
+contexto/
+
+# === Python ===
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# === Docker / diversos ===
+*.log
+.DS_Store

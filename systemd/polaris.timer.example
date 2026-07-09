@@ -1,0 +1,19 @@
+# Polaris — timer. Copie junto do .service (mesmo diretório systemd), ajuste o
+# horário e habilite:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now polaris.timer
+#
+# ESCOLHA um horário sem conflito com outros usos da máquina do modelo
+# (ex.: se o PC do modelo também é de jogos, evite a noite).
+
+[Unit]
+Description=Agenda a triagem incremental do Polaris
+
+[Timer]
+# Exemplo: todo dia às 09:30. Ajuste. Veja `man systemd.time` para a sintaxe.
+OnCalendar=*-*-* 09:30:00
+# Se a máquina estava desligada no horário, roda assim que ligar (não perde o dia).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

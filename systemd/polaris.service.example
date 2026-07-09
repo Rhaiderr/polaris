@@ -1,0 +1,32 @@
+# Polaris — unit de serviço (run-once). Copie para a sua máquina como
+#   ~/.config/systemd/user/polaris.service   (systemd --user)   ou
+#   /etc/systemd/system/polaris.service        (system-wide, ajuste User=)
+# e AJUSTE os caminhos. Este arquivo versionado NÃO contém nada pessoal.
+#
+# Comportamento CORE do Polaris: se o endpoint LLM não responder, ele apenas
+# pula a execução (exit 0). Quem mantém o modelo sempre de pé não precisa de
+# hook nenhum — deixe as linhas ExecStartPre/ExecStopPost comentadas.
+
+[Unit]
+Description=Polaris — triagem de Gmail (run-once)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projetos/polaris
+
+# --- HOOK OPCIONAL: acordar o modelo antes (só se ele não fica sempre ligado) ---
+# Descomente e aponte para o SEU script. Ele deve: checar se o modelo já está
+# no ar (e, se sim, marcar para NÃO desligar depois); ligar se estiver off e
+# esperar ficar pronto; e, se a máquina do modelo estiver inacessível, sair 0
+# (o Polaris pula sozinho, o incremental recupera na próxima rodada).
+# ExecStartPre=/caminho/seu-script-de-wake
+
+ExecStart=/usr/bin/docker compose run --rm polaris --modo incremental
+
+# --- HOOK OPCIONAL: desligar o modelo depois (só se este serviço o ligou) ------
+# ExecStopPost=/caminho/seu-script-de-sleep
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,19 @@
+# Polaris — orquestração via `docker compose run --rm polaris <args>`.
+# Rede bridge padrão (testada); sem network_mode: host.
+services:
+  polaris:
+    build: .
+    image: polaris:local
+    env_file: .env
+    # Permite que LLM_BASE_URL=http://host.docker.internal:1234/v1 alcance
+    # um modelo servido na MESMA máquina do container. Para um modelo em outra
+    # máquina da LAN, use o IP dela no .env e este mapeamento é inofensivo.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Nada sensível em camada Docker — tudo montado do host:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    # Sem restart/daemon: é run-once. O agendamento fica no systemd timer do host.
+    # Args default (dry-run) definidos no Dockerfile; sobrescreva na linha de comando:
+    #   docker compose run --rm polaris --modo incremental
