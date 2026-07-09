@@ -1,0 +1,3 @@
+# Deps exclusivas do wizard do add-on (o núcleo tem as suas em requirements.core.txt).
+Flask>=3.0.0
+gunicorn>=21.2.0

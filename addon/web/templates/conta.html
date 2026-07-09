@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block titulo %}Conta Google{% endblock %}
+{% block conteudo %}
+<h1>1. Vincular conta Google</h1>
+<p class="lead">O Polaris só pede o escopo <code>gmail.modify</code> (ler, rotular,
+arquivar e mandar para a Lixeira — <strong>nunca</strong> apagar de vez nem enviar
+emails).</p>
+
+<div class="card">
+  <div class="row" style="justify-content: space-between;">
+    <strong>credentials.json (app OAuth compartilhado)</strong>
+    {% if credenciais_ok %}<span class="pill ok">ok</span>
+    {% else %}<span class="pill no">faltando</span>{% endif %}
+  </div>
+  <p class="muted">Um único app OAuth do Google autoriza todas as contas. Gere o
+  <code>credentials.json</code> (tipo <em>Desktop</em>) seguindo
+  <code>docs/gerar-credenciais-gmail.md</code> e coloque-o em <code>/config</code>.</p>
+</div>
+
+<h2>Contas já vinculadas</h2>
+{% if contas %}
+<div class="card">
+  <table>
+    <tr><th>Conta</th><th>Login</th><th>Categorias</th></tr>
+    {% for c in contas %}
+    <tr><td>{{ c.nome }}</td>
+      <td>{% if c.tem_token %}<span class="pill ok">ok</span>{% else %}<span class="pill no">pendente</span>{% endif %}</td>
+      <td>{{ c.categorias }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% else %}
+<div class="msg info">Nenhuma conta vinculada ainda.</div>
+{% endif %}
+
+<h2>Adicionar uma conta</h2>
+<div class="msg info">
+  <strong>Nota sobre o login pelo navegador (ingress).</strong> O fluxo OAuth do
+  Google redireciona para <code>localhost</code>, que através do ingress aponta para
+  a máquina errada. Enquanto essa etapa não é resolvida no front, o login é feito
+  uma vez por terminal (headless) — abaixo. O token gerado fica salvo e renova
+  sozinho; você não repete isso.
+</div>
+<div class="card">
+  <p>No host do add-on (ou em qualquer máquina com o projeto), rode:</p>
+  <pre class="log">OAUTH_PORT={{ oauth_port }} python -m src.orquestrador --conta &lt;nome&gt; --login</pre>
+  <p class="muted">Ele imprime uma URL. Abra-a (se estiver por SSH, use um túnel:
+  <code>ssh -L {{ oauth_port }}:localhost:{{ oauth_port }} &lt;host&gt;</code>), autorize com
+  a conta Google desejada, e o <code>token.json</code> é criado em
+  <code>config/&lt;nome&gt;/</code>. Recarregue esta página para ver a conta aparecer.</p>
+</div>
+{% endblock %}
