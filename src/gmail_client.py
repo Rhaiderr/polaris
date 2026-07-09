@@ -203,6 +203,22 @@ class GmailClient:
         return out
 
     # ----------------------------------------------------- leitura de msg
+    def get_meta(self, msg_id: str) -> dict:
+        """Só remetente/assunto (format=metadata) — barato para varreduras
+        em massa (ex.: sugestão de categorias), sem baixar o corpo."""
+        raw = (
+            self.service.users()
+            .messages()
+            .get(userId="me", id=msg_id, format="metadata",
+                 metadataHeaders=["From", "Subject"])
+            .execute()
+        )
+        headers = {h["name"].lower(): h["value"]
+                   for h in raw.get("payload", {}).get("headers", [])}
+        return {"id": msg_id,
+                "remetente": headers.get("from", ""),
+                "assunto": headers.get("subject", "")}
+
     def get_email(self, msg_id: str) -> EmailMsg:
         raw = (
             self.service.users()

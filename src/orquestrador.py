@@ -427,6 +427,88 @@ def _rodar_conta(conta: str, args, retencao: int) -> int:
     return 0
 
 
+def _sugerir_categorias(conta: str, args) -> int:
+    """Fluxo de sugestão de categorias (futuro passo 3 do wizard do add-on).
+
+    --sugerir-categorias: amostra a caixa → LLM propõe → terminal interativo
+    aceita na hora; sem TTY, salva logs/<conta>/sugestoes.json e sai (o front
+    lê esse JSON e devolve o aceite via --aceitar).
+    --aceitar '1,3'|'todas': aplica sugestões salvas ao categorias.yaml.
+    """
+    from . import sugestor
+
+    cdir = conta_dir(conta)
+    categorias_path = os.path.join(cdir, "categorias.yaml")
+    if not os.path.exists(os.path.join(cdir, "token.json")):
+        log.error("Conta '%s' sem login. Rode: python -m src.orquestrador "
+                  "--conta %s --login", conta, conta)
+        return 1
+
+    # ---- só aceite (front / segunda etapa) ----
+    if args.aceitar and not args.sugerir:
+        try:
+            sugestoes = sugestor.carregar_json(conta, LOGS_DIR)
+        except FileNotFoundError as e:
+            log.error("%s", e)
+            return 1
+        if args.aceitar.strip().lower() in ("todas", "todos", "all"):
+            aceitas = sugestoes
+        else:
+            idx = [int(t) for t in args.aceitar.split(",") if t.strip().isdigit()]
+            aceitas = [sugestoes[i - 1] for i in idx if 1 <= i <= len(sugestoes)]
+        if not aceitas:
+            log.info("Nada a aceitar.")
+            return 0
+        sugestor.aplicar_aceites(categorias_path, aceitas)
+        log.info("✅ %d categoria(s) adicionada(s) a %s: %s",
+                 len(aceitas), categorias_path,
+                 ", ".join(a["nome"] for a in aceitas))
+        return 0
+
+    # ---- varredura + sugestão ----
+    try:
+        cat = carregar_catalogo(categorias_path)
+        gmail = GmailClient(token_path=os.path.join(cdir, "token.json"))
+        llm = LLMClient()
+    except Exception as e:
+        log.error("Conta '%s': falha ao inicializar: %s", conta, e)
+        return 1
+    if not llm.disponivel():
+        log.error("Endpoint LLM indisponível (%s). Suba o modelo e rode de novo.",
+                  llm.base_url)
+        return 1
+
+    max_n = args.max_n or 200
+    log.info("Analisando %d emails da conta '%s' (só remetente/assunto)...",
+             max_n, conta)
+    metas = sugestor.amostrar(gmail, max_n)
+    try:
+        sugestoes = sugestor.sugerir(metas, cat, llm, log=log)
+    except LLMIndisponivel as e:
+        log.error("LLM caiu durante a análise (%s). Rode de novo.", e)
+        return 1
+    if not sugestoes:
+        log.info("Nenhuma categoria nova a sugerir — as atuais já cobrem a caixa.")
+        return 0
+
+    path = sugestor.salvar_json(conta, LOGS_DIR, sugestoes)
+    if sugestor.interativo():
+        aceitas = sugestor._prompt_checkbox(sugestoes)
+        if not aceitas:
+            log.info("Nenhuma aceita. Sugestões ficaram salvas em %s "
+                     "(aceite depois com --aceitar).", path)
+            return 0
+        sugestor.aplicar_aceites(categorias_path, aceitas)
+        log.info("✅ %d categoria(s) adicionada(s): %s",
+                 len(aceitas), ", ".join(a["nome"] for a in aceitas))
+    else:
+        # Sem TTY (front/automação): só publica o JSON.
+        print(json.dumps({"sugestoes": sugestoes}, ensure_ascii=False, indent=2))
+        log.info("Sugestões salvas em %s. Aceite com: --conta %s --aceitar '1,2'",
+                 path, conta)
+    return 0
+
+
 def main(argv=None) -> int:
     global MODO_SOMBRA
     ap = argparse.ArgumentParser(prog="polaris", description="Triagem de Gmail com LLM.")
@@ -441,6 +523,12 @@ def main(argv=None) -> int:
                     help="limita quantas mensagens processar")
     ap.add_argument("--login", action="store_true",
                     help="adiciona/reautentica uma conta (login OAuth) e sai")
+    ap.add_argument("--sugerir-categorias", action="store_true", dest="sugerir",
+                    help="varre uma amostra da conta e sugere categorias novas "
+                         "(interativo no terminal; sem TTY salva JSON) e sai")
+    ap.add_argument("--aceitar", default=None, metavar="NUMS",
+                    help="aceita sugestões salvas (logs/<conta>/sugestoes.json): "
+                         "'1,3' ou 'todas'. Usado pelo front / pós --sugerir-categorias")
     args = ap.parse_args(argv)
 
     _carregar_dotenv()
@@ -448,6 +536,12 @@ def main(argv=None) -> int:
 
     if args.login:
         return _onboarding(args.conta or CONTA_PADRAO)
+
+    if args.sugerir or args.aceitar:
+        if not args.conta:
+            log.error("--sugerir-categorias/--aceitar exigem --conta <nome>.")
+            return 1
+        return _sugerir_categorias(args.conta, args)
 
     # Sem --conta: processa TODAS as contas configuradas (ideal para o timer).
     contas = [args.conta] if args.conta else perfis_configurados()

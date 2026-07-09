@@ -133,10 +133,34 @@ python -m src.orquestrador [opções]
   --reprocessar                   reprocessa mensagens já marcadas Processado
   --max N                         limita quantas mensagens processar
   --login                         adiciona/reautentica uma conta e sai
+  --sugerir-categorias            sugere categorias novas a partir da caixa e sai
+  --aceitar NUMS                  aceita sugestões salvas ('1,3' ou 'todas')
 ```
 
 Na 1ª execução incremental, o Polaris só **fixa o cursor** (bootstrap) e não
 processa nada. Use `--modo completo` para o backlog existente.
+
+### Sugestão de categorias (IA)
+
+Não sabe por onde começar as categorias? Deixe o modelo olhar a sua caixa e
+propor — você só marca o que quiser:
+
+```bash
+python -m src.orquestrador --conta principal --sugerir-categorias --max 200
+```
+
+Ele amostra os emails mais recentes (**só remetente/assunto**, sem baixar o
+conteúdo), propõe categorias novas — sem repetir as que você já tem — e mostra
+a lista numerada para você aceitar (`1,3`, `todos` ou Enter para nenhuma). As
+aceitas entram no `categorias.yaml` com `permitir_exclusao: false` (exclusão é
+sempre decisão sua, explícita) e um backup `.bak` é criado antes.
+
+Sem terminal interativo (automação/front-end), as sugestões são salvas em
+`logs/<conta>/sugestoes.json`; o aceite vem depois:
+
+```bash
+python -m src.orquestrador --conta principal --aceitar '1,2'
+```
 
 ### Múltiplas contas
 
