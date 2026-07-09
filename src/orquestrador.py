@@ -25,6 +25,7 @@ import fcntl
 import json
 import logging
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 
@@ -41,12 +42,29 @@ LIMIAR_EXCLUIR = 0.95   # ≥ isto (+ demais critérios) → trash/sombra
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
-STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
-CATEGORIAS_PATH = os.path.join(CONFIG_DIR, "categorias.yaml")
-DECISOES_PATH = os.path.join(LOGS_DIR, "decisoes.jsonl")
+# credentials.json é COMPARTILHADO; token/categorias/state são por-conta.
+CATEGORIAS_EXEMPLO = os.path.join(CONFIG_DIR, "categorias.yaml.example")
 LOCK_PATH = os.path.join(LOGS_DIR, ".polaris.lock")
+CONTA_PADRAO = "principal"   # usado no --login quando --conta é omitido
 
 log = logging.getLogger("polaris")
+
+
+# ---------------------------------------------------------------- contas
+def conta_dir(conta: str) -> str:
+    """Diretório de config de uma conta: config/<conta>/ (token/categorias/state)."""
+    return os.path.join(CONFIG_DIR, conta)
+
+
+def perfis_configurados() -> list[str]:
+    """Contas já logadas = subpastas de config/ que têm token.json."""
+    if not os.path.isdir(CONFIG_DIR):
+        return []
+    return sorted(
+        d for d in os.listdir(CONFIG_DIR)
+        if os.path.isdir(os.path.join(CONFIG_DIR, d))
+        and os.path.exists(os.path.join(CONFIG_DIR, d, "token.json"))
+    )
 
 
 ENV_PATH = os.path.join(BASE_DIR, ".env")
@@ -138,12 +156,17 @@ def decidir(
 
 # ------------------------------------------------------------ orquestrador
 class Orquestrador:
-    def __init__(self, dry_run: bool, reprocessar: bool, max_n: int | None):
+    def __init__(self, conta: str, dry_run: bool, reprocessar: bool, max_n: int | None):
+        self.conta = conta
         self.dry_run = dry_run
         self.reprocessar = reprocessar
         self.max_n = max_n
-        self.cat = carregar_catalogo(CATEGORIAS_PATH)
-        self.gmail = GmailClient()
+        cdir = conta_dir(conta)
+        self.categorias_path = os.path.join(cdir, "categorias.yaml")
+        self.state_path = os.path.join(cdir, "state.json")
+        self.decisoes_path = os.path.join(LOGS_DIR, conta, "decisoes.jsonl")
+        self.cat = carregar_catalogo(self.categorias_path)
+        self.gmail = GmailClient(token_path=os.path.join(cdir, "token.json"))
         self.llm = LLMClient()
         self._label_id_cache: dict[str, str] = {}
         self.stats = {"vistos": 0, "processados": 0, "pulados": 0,
@@ -151,18 +174,19 @@ class Orquestrador:
 
     # ---- estado (leitura/gravação atômica) ----
     def _load_state(self) -> dict:
-        if os.path.exists(STATE_PATH):
-            with open(STATE_PATH, encoding="utf-8") as f:
+        if os.path.exists(self.state_path):
+            with open(self.state_path, encoding="utf-8") as f:
                 return json.load(f)
         return {"historyId": None, "ultima_execucao": None}
 
     def _save_state(self, state: dict) -> None:
         if self.dry_run:
             return
-        tmp = STATE_PATH + ".tmp"
+        os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
+        tmp = self.state_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, STATE_PATH)
+        os.replace(tmp, self.state_path)
 
     # ---- label name -> id (cria se preciso) ----
     def _label_id(self, nome: str) -> str:
@@ -232,7 +256,8 @@ class Orquestrador:
                      cls.categoria, cls.confianca, cls.excluir,
                      email.tem_list_unsubscribe, cls.motivo)
         else:
-            with open(DECISOES_PATH, "a", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(self.decisoes_path), exist_ok=True)
+            with open(self.decisoes_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
     # ---- modos ----
@@ -273,11 +298,33 @@ class Orquestrador:
         state["ultima_execucao"] = _agora_iso()
         self._save_state(state)
 
+    def _prune_logs(self, retencao_dias: int) -> None:
+        """Remove entradas do decisoes.jsonl (desta conta) mais antigas que a retenção."""
+        if not os.path.exists(self.decisoes_path):
+            return
+        limite = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retencao_dias)
+        manter = []
+        with open(self.decisoes_path, encoding="utf-8") as f:
+            for linha in f:
+                linha = linha.strip()
+                if not linha:
+                    continue
+                try:
+                    ts = dt.datetime.fromisoformat(json.loads(linha)["ts"])
+                    if ts >= limite:
+                        manter.append(linha)
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    manter.append(linha)  # não descarta o que não sei datar
+        tmp = self.decisoes_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(manter) + ("\n" if manter else ""))
+        os.replace(tmp, self.decisoes_path)
+
     def resumo(self) -> None:
         s = self.stats
-        log.info("Resumo: vistos=%d processados=%d pulados=%d | "
+        log.info("Conta '%s' — resumo: vistos=%d processados=%d pulados=%d | "
                  "label=%d arquivar=%d revisar=%d excluir=%d sombra=%d%s",
-                 s["vistos"], s["processados"], s["pulados"], s["label"],
+                 self.conta, s["vistos"], s["processados"], s["pulados"], s["label"],
                  s["arquivar"], s["revisar"], s["excluir"], s["sombra"],
                  "  (DRY-RUN: nada aplicado)" if self.dry_run else "")
 
@@ -310,29 +357,6 @@ def _memo(fn):
     return wrapped
 
 
-def _prune_logs(retencao_dias: int) -> None:
-    """Remove entradas de decisoes.jsonl mais antigas que a retenção (contêm emails)."""
-    if not os.path.exists(DECISOES_PATH):
-        return
-    limite = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retencao_dias)
-    manter = []
-    with open(DECISOES_PATH, encoding="utf-8") as f:
-        for linha in f:
-            linha = linha.strip()
-            if not linha:
-                continue
-            try:
-                ts = dt.datetime.fromisoformat(json.loads(linha)["ts"])
-                if ts >= limite:
-                    manter.append(linha)
-            except (json.JSONDecodeError, KeyError, ValueError):
-                manter.append(linha)  # não descarta o que não sei datar
-    tmp = DECISOES_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(manter) + ("\n" if manter else ""))
-    os.replace(tmp, DECISOES_PATH)
-
-
 def _setup_logging() -> None:
     os.makedirs(LOGS_DIR, exist_ok=True)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
@@ -349,9 +373,66 @@ def _setup_logging() -> None:
 MODO_SOMBRA = True
 
 
+def _onboarding(conta: str) -> int:
+    """Adiciona uma conta: faz o login OAuth e deixa tudo pronto num comando.
+
+    Mantém o fluxo simples para não assustar quem nunca configurou nada:
+    cria config/<conta>/, gera o token, semeia um categorias.yaml inicial e
+    imprime o próximo passo.
+    """
+    cdir = conta_dir(conta)
+    os.makedirs(cdir, exist_ok=True)
+    token_path = os.path.join(cdir, "token.json")
+    try:
+        GmailClient.autenticar_interativo(token_path=token_path)
+    except FileNotFoundError as e:
+        log.error("%s", e)
+        return 1
+    cat_path = os.path.join(cdir, "categorias.yaml")
+    semeou = False
+    if not os.path.exists(cat_path) and os.path.exists(CATEGORIAS_EXEMPLO):
+        shutil.copy(CATEGORIAS_EXEMPLO, cat_path)
+        semeou = True
+    log.info("")
+    log.info("✅ Conta '%s' adicionada! Token em %s", conta, token_path)
+    if semeou:
+        log.info("   Criei um categorias.yaml inicial: %s", cat_path)
+        log.info("   → Edite com as SUAS categorias/labels do Gmail (é só texto).")
+    log.info("   Veja a triagem SEM aplicar nada:")
+    log.info("       python -m src.orquestrador --conta %s --modo completo --dry-run --max 30",
+             conta)
+    return 0
+
+
+def _rodar_conta(conta: str, args, retencao: int) -> int:
+    """Roda a triagem de UMA conta. Retorna 0 em sucesso, 1 se falhou ao iniciar."""
+    log.info("──── Conta '%s' ────", conta)
+    try:
+        orq = Orquestrador(conta, args.dry_run, args.reprocessar, args.max_n)
+    except Exception as e:  # falta de token/categorias etc.
+        log.error("Conta '%s': falha ao inicializar: %s", conta, e)
+        return 1
+    if not args.dry_run:
+        orq._prune_logs(retencao)
+    try:
+        if args.modo == "incremental":
+            orq.incremental()
+        else:
+            orq.completo()
+    except LLMIndisponivel as e:
+        log.warning("Conta '%s': LLM caiu no meio (%s). Sigo sem erro; "
+                    "o incremental recupera na próxima rodada.", conta, e)
+    finally:
+        orq.resumo()
+    return 0
+
+
 def main(argv=None) -> int:
     global MODO_SOMBRA
     ap = argparse.ArgumentParser(prog="polaris", description="Triagem de Gmail com LLM.")
+    ap.add_argument("--conta", default=None,
+                    help="qual conta processar (config/<conta>/). Omitido: TODAS as "
+                         "contas configuradas (no --login: 'principal').")
     ap.add_argument("--modo", choices=["incremental", "completo"], default="incremental")
     ap.add_argument("--dry-run", action="store_true", help="não aplica nada no Gmail")
     ap.add_argument("--reprocessar", action="store_true",
@@ -359,21 +440,34 @@ def main(argv=None) -> int:
     ap.add_argument("--max", type=int, default=None, dest="max_n",
                     help="limita quantas mensagens processar")
     ap.add_argument("--login", action="store_true",
-                    help="faz o 1º login OAuth (gera config/token.json) e sai")
+                    help="adiciona/reautentica uma conta (login OAuth) e sai")
     args = ap.parse_args(argv)
 
     _carregar_dotenv()
     _setup_logging()
 
     if args.login:
-        GmailClient.autenticar_interativo()
-        log.info("token.json gerado em config/. Login concluído.")
-        return 0
+        return _onboarding(args.conta or CONTA_PADRAO)
+
+    # Sem --conta: processa TODAS as contas configuradas (ideal para o timer).
+    contas = [args.conta] if args.conta else perfis_configurados()
+    if not contas:
+        log.error("Nenhuma conta configurada. Adicione uma com: "
+                  "python -m src.orquestrador --conta <nome> --login")
+        return 1
+    # Conta pedida explicitamente mas sem login ainda → mensagem clara.
+    faltando = [c for c in contas
+                if not os.path.exists(os.path.join(conta_dir(c), "token.json"))]
+    if faltando:
+        log.error("Conta(s) sem login: %s. Adicione com: "
+                  "python -m src.orquestrador --conta %s --login",
+                  ", ".join(faltando), faltando[0])
+        return 1
 
     MODO_SOMBRA = _env_bool("MODO_SOMBRA_EXCLUSAO", True)
     retencao = int(os.environ.get("LOG_RETENCAO_DIAS", "90"))
 
-    # Lock contra execução concorrente (timer x execução manual).
+    # Lock global contra execução concorrente (timer x execução manual).
     os.makedirs(LOGS_DIR, exist_ok=True)
     lock_fd = open(LOCK_PATH, "w")
     try:
@@ -383,33 +477,24 @@ def main(argv=None) -> int:
         return 0
 
     try:
-        orq = Orquestrador(args.dry_run, args.reprocessar, args.max_n)
-    except Exception as e:  # falta de token/config etc.
-        log.error("Falha ao inicializar: %s", e)
-        return 1
+        # Endpoint LLM é compartilhado entre as contas — checa uma vez só.
+        try:
+            llm = LLMClient()
+        except ValueError as e:
+            log.error("Config do LLM inválida: %s", e)
+            return 1
+        if not llm.disponivel():
+            log.warning("Endpoint LLM indisponível (%s). Pulando esta execução.",
+                        llm.base_url)
+            return 0
 
-    # Endpoint LLM indisponível → pular execução (exit 0). Incremental recupera depois.
-    if not orq.llm.disponivel():
-        log.warning("Endpoint LLM indisponível (%s). Pulando esta execução.",
-                    orq.llm.base_url)
-        return 0
-
-    if not args.dry_run:
-        _prune_logs(retencao)
-
-    try:
-        if args.modo == "incremental":
-            orq.incremental()
-        else:
-            orq.completo()
-    except LLMIndisponivel as e:
-        log.warning("LLM caiu no meio da execução (%s). Interrompendo sem erro; "
-                    "o incremental recupera na próxima rodada.", e)
+        rc = 0
+        for conta in contas:
+            rc |= _rodar_conta(conta, args, retencao)
+        return rc
     finally:
-        orq.resumo()
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
-    return 0
 
 
 if __name__ == "__main__":

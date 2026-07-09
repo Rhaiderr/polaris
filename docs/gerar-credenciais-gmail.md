@@ -59,13 +59,18 @@ Rode **fora do container** (precisa abrir o navegador), na pasta do projeto:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m src.orquestrador --login
+python -m src.orquestrador --login              # conta 'principal'
+# para uma conta com nome próprio (ou uma 2ª conta):
+#   python -m src.orquestrador --conta trabalho --login
 ```
 
-- Abre o navegador. Escolha a sua conta Gmail.
-- Na tela **"app não verificado"**: **Avançado → Acessar Polaris (não seguro)**
-  → conceda o acesso (é o seu próprio app).
-- Ao final, o Polaris grava **`config/token.json`**. Pronto.
+- Imprime uma URL (não abre navegador — bom para SSH/headless). Abra-a no
+  navegador; se estiver acessando por SSH, faça antes um túnel:
+  `ssh -L 8765:localhost:8765 SEU_HOST`.
+- Escolha a sua conta Gmail. Na tela **"app não verificado"**:
+  **Avançado → Acessar Polaris (não seguro)** → conceda o acesso (é o seu app).
+- Ao final, o Polaris grava **`config/<conta>/token.json`** e semeia um
+  `categorias.yaml` inicial naquela pasta. Pronto.
 
 > No Docker o `token.json` é **montado como volume** (nunca entra na imagem).
 > Gere-o aqui e o container usa o mesmo arquivo.
@@ -89,7 +94,7 @@ python -m src.orquestrador --modo completo --dry-run --max 30
 
 | Sintoma | Causa provável |
 |---|---|
-| `Sem token OAuth válido` | Faltou rodar `--login` ou o `token.json` não está em `config/`. |
+| `Sem token OAuth válido` / `Conta sem login` | Faltou rodar `--login` daquela conta (o token fica em `config/<conta>/token.json`). |
 | Login OK mas para de funcionar em ~7 dias | App ficou em *Testing*. Publique **In production** (passo 4). |
 | `access_denied` no login | Seu e-mail não está como usuário de teste / app não publicado. |
 | `credentials.json não encontrado` | O JSON baixado não foi salvo em `config/credentials.json`. |
