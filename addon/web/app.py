@@ -146,8 +146,9 @@ class Job:
 JOB = Job()
 
 # Estados OAuth pendentes por conta (entre "gerar URL" e "colar resposta").
+# Guarda state + code_verifier (PKCE) — ambos gerados no passo 1 e exigidos no 2.
 # Single-worker: um dict em memória basta; se o add-on reiniciar, refaz o passo 1.
-_PENDENTES: dict[str, str] = {}
+_PENDENTES: dict[str, dict] = {}
 
 
 def _slug(nome: str) -> str:
@@ -222,24 +223,25 @@ def criar_app() -> Flask:
             return redirect(url_for("conta",
                             erro="Falta o credentials.json (veja abaixo)."))
         try:
-            url, state = oauth.gerar_url(CREDENTIALS_PATH)
+            url, state, verifier = oauth.gerar_url(CREDENTIALS_PATH)
         except Exception as e:
             return redirect(url_for("conta", erro=f"Erro ao gerar o link: {e}"))
-        _PENDENTES[nome] = state
+        _PENDENTES[nome] = {"state": state, "verifier": verifier}
         return redirect(url_for("conta", auth_url=url, conta=nome))
 
     @app.route("/conta/concluir", methods=["POST"])
     def conta_concluir():
         nome = _slug(request.form.get("conta", ""))
         resposta = request.form.get("resposta_url", "")
-        state = _PENDENTES.get(nome)
-        if not state:
+        pend = _PENDENTES.get(nome)
+        if not pend:
             return redirect(url_for("conta", conta=nome,
                             erro="Sessão expirada — gere o link novamente."))
         cdir = orq.conta_dir(nome)
         token_path = os.path.join(cdir, "token.json")
         try:
-            oauth.concluir(CREDENTIALS_PATH, state, resposta, token_path)
+            oauth.concluir(CREDENTIALS_PATH, pend["state"], pend["verifier"],
+                           resposta, token_path)
         except Exception as e:
             return redirect(url_for("conta", conta=nome,
                             auth_url=request.form.get("auth_url"), erro=str(e)))

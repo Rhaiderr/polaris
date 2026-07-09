@@ -9,9 +9,10 @@ endereço; o usuário copia essa URL e cola no wizard, que troca o code pelo tok
 É o fluxo mais simples que funciona com o escopo sensível `gmail.modify`
 (o device flow do Google — código curto no celular — NÃO permite escopos Gmail).
 
-Dois passos:
-  1. `gerar_url(credentials_path)` → (url de consentimento, state)
-  2. `concluir(credentials_path, state, resposta_url, token_path)` → grava token.json
+Dois passos (o `code_verifier` do PKCE gerado no passo 1 precisa ser preservado
+para o passo 2 — o `Flow` é recriado entre as duas requisições HTTP):
+  1. `gerar_url(credentials_path)` → (url de consentimento, state, code_verifier)
+  2. `concluir(credentials_path, state, code_verifier, resposta_url, token_path)`
 """
 from __future__ import annotations
 
@@ -39,19 +40,23 @@ def _flow(credentials_path: str, state: str | None = None):
         redirect_uri=redirect_uri(), state=state)
 
 
-def gerar_url(credentials_path: str) -> tuple[str, str]:
+def gerar_url(credentials_path: str) -> tuple[str, str, str]:
     """Passo 1: URL de consentimento do Google. `access_type=offline` +
-    `prompt=consent` garantem o refresh_token (login que não expira)."""
+    `prompt=consent` garantem o refresh_token (login que não expira).
+
+    Retorna também o `code_verifier` do PKCE — ele é gerado aqui e precisa ser
+    reapresentado no passo 2 (`concluir`), senão o Google recusa a troca do code.
+    """
     if not os.path.exists(credentials_path):
         raise FileNotFoundError(credentials_path)
     flow = _flow(credentials_path)
     url, state = flow.authorization_url(
         access_type="offline", prompt="consent", include_granted_scopes="false")
-    return url, state
+    return url, state, flow.code_verifier
 
 
-def concluir(credentials_path: str, state: str, resposta_url: str,
-             token_path: str) -> None:
+def concluir(credentials_path: str, state: str, code_verifier: str,
+             resposta_url: str, token_path: str) -> None:
     """Passo 2: troca o code (extraído da URL colada) pelo token e o grava."""
     resposta_url = (resposta_url or "").strip()
     if "code=" not in resposta_url:
@@ -59,6 +64,7 @@ def concluir(credentials_path: str, state: str, resposta_url: str,
             "A URL colada não contém o código de autorização (code=...). "
             "Copie a URL INTEIRA da barra de endereço depois de aprovar.")
     flow = _flow(credentials_path, state=state)
+    flow.code_verifier = code_verifier   # reapresenta o PKCE do passo 1
     flow.fetch_token(authorization_response=resposta_url)
     creds = flow.credentials
     if not creds.refresh_token:
