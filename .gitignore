@@ -1,12 +1,10 @@
-# === Segredos e estado (NUNCA commitar) ===
-config/credentials.json
-config/token.json
-config/state.json
+# === Segredos, estado e dados pessoais (NUNCA commitar) ===
+# Ignora TUDO em config/ (credentials.json compartilhado + as pastas por-conta
+# config/<conta>/ com token.json, categorias.yaml e state.json) — labels reais
+# revelam moradia/estudos/investimentos. Versiona só os .example genéricos.
+config/*
+!config/*.example
 .env
-
-# === Dados pessoais (labels reais revelam moradia/estudos/investimentos) ===
-# Versionar apenas config/categorias.yaml.example com categorias genéricas.
-config/categorias.yaml
 
 # === Logs (contêm remetentes/assuntos reais) ===
 logs/

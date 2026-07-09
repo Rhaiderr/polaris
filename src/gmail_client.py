@@ -25,8 +25,9 @@ from dataclasses import dataclass, field
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
+# credentials.json é COMPARTILHADO entre contas: um app OAuth Desktop autoriza
+# quantas contas Google você quiser. O token.json é por-conta (config/<conta>/).
 CREDENTIALS_PATH = os.path.join(CONFIG_DIR, "credentials.json")
-TOKEN_PATH = os.path.join(CONFIG_DIR, "token.json")
 
 
 @dataclass
@@ -44,44 +45,49 @@ class EmailMsg:
 
 
 class GmailClient:
-    def __init__(self, service=None):
+    def __init__(self, token_path: str, credentials_path: str = CREDENTIALS_PATH,
+                 service=None):
+        self.token_path = token_path
+        self.credentials_path = credentials_path
         self.service = service or self._build_service()
         self._labels_cache: dict[str, str] | None = None  # nome -> id
 
     # ----------------------------------------------------------------- auth
-    @staticmethod
-    def _load_creds():
+    def _load_creds(self):
         from google.oauth2.credentials import Credentials
-        if os.path.exists(TOKEN_PATH):
-            return Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+        if os.path.exists(self.token_path):
+            return Credentials.from_authorized_user_file(self.token_path, SCOPES)
         return None
 
     @classmethod
-    def autenticar_interativo(cls) -> None:
-        """1º login OAuth (roda FORA do container, 1 vez). Gera config/token.json.
+    def autenticar_interativo(cls, token_path: str,
+                              credentials_path: str = CREDENTIALS_PATH) -> None:
+        """1º login OAuth de uma conta (roda FORA do container, 1 vez).
 
-        Requer config/credentials.json (ver docs/gerar-credenciais-gmail.md).
+        Grava o token em `token_path` (config/<conta>/token.json). Requer o
+        credentials.json COMPARTILHADO (ver docs/gerar-credenciais-gmail.md).
         Sobe um servidor local numa porta FIXA (env OAUTH_PORT, default 8765) e
         NÃO tenta abrir navegador — imprime a URL de consentimento. Assim funciona
         em máquina headless / via SSH: basta encaminhar a porta
         (ssh -L PORT:localhost:PORT ...) e abrir a URL no navegador da sua máquina.
         """
         from google_auth_oauthlib.flow import InstalledAppFlow
-        if not os.path.exists(CREDENTIALS_PATH):
+        if not os.path.exists(credentials_path):
             raise FileNotFoundError(
-                f"Falta {CREDENTIALS_PATH}. Siga docs/gerar-credenciais-gmail.md."
+                f"Falta {credentials_path}. Siga docs/gerar-credenciais-gmail.md."
             )
+        os.makedirs(os.path.dirname(token_path), exist_ok=True)
         port = int(os.environ.get("OAUTH_PORT", "8765"))
-        flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
         creds = flow.run_local_server(
             port=port,
             open_browser=False,
             authorization_prompt_message=(
                 "Abra esta URL no navegador da sua máquina "
-                f"(com túnel SSH: ssh -L {port}:localhost:{port} deneb):\n{{url}}"
+                f"(com túnel SSH: ssh -L {port}:localhost:{port} SEU_HOST):\n{{url}}"
             ),
         )
-        with open(TOKEN_PATH, "w") as f:
+        with open(token_path, "w") as f:
             f.write(creds.to_json())
 
     def _build_service(self):
@@ -91,12 +97,12 @@ class GmailClient:
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
-                with open(TOKEN_PATH, "w") as f:
+                with open(self.token_path, "w") as f:
                     f.write(creds.to_json())
             else:
                 raise RuntimeError(
                     "Sem token OAuth válido. Rode o 1º login: "
-                    "python -m src.orquestrador --login  (fora do container)."
+                    "python -m src.orquestrador --conta <nome> --login  (fora do container)."
                 )
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
