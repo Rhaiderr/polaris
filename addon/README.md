@@ -17,9 +17,9 @@ zero à execução agendada, sem terminal.
 
 ## As 4 telas
 
-1. **Conta Google** — status das contas e como vincular. Um único
-   `credentials.json` (app OAuth tipo *Desktop*) autoriza todas as contas; coloque-o
-   em `/config`. O login em si é headless (ver limitação abaixo).
+1. **Conta Google** — vincula a conta pelo próprio navegador, sem terminal (ver
+   "Como funciona o login" abaixo). Um único `credentials.json` (app OAuth tipo
+   *Desktop*) autoriza todas as contas; coloque-o em `/config`.
 2. **Endpoint do LLM** — URL base (`.../v1`), modelo e API key opcional, com botão
    **testar conexão**. Serve qualquer endpoint compatível com a API da OpenAI.
 3. **Categorias** — varre uma amostra da caixa (só remetente/assunto) e o modelo
@@ -40,18 +40,26 @@ zero à execução agendada, sem terminal.
 As opções semeiam o `.env` na primeira execução; depois a Tela 2 passa a ser a dona
 da configuração do endpoint.
 
-## Limitação conhecida — login OAuth pelo navegador
+## Como funciona o login (sem terminal)
 
-O fluxo OAuth do Google redireciona para `localhost`, o que **não funciona através
-do ingress** (o navegador do usuário não está no host do HA). Enquanto essa etapa
-não é resolvida no front, o login é feito uma vez por terminal (headless):
+O app do Google é do tipo *Desktop*, cujo único redirect permitido é o loopback
+(`http://localhost`). Através do ingress o navegador não está no host do HA, então
+esse loopback "falha" — mas a URL de retorno carrega o código de autorização. A
+Tela 1 aproveita isso em 3 cliques:
 
-```sh
-OAUTH_PORT=8765 python -m src.orquestrador --conta <nome> --login
-```
+1. Você dá um nome à conta e clica em **Autorizar no Google** (abre em nova aba).
+2. Aprova com a conta desejada. O navegador mostra uma **página de erro** em
+   `localhost` — **é esperado**.
+3. Copia a **URL inteira** dessa página e cola no wizard. Pronto: o token é gravado
+   e renova sozinho (você não repete).
 
-O token gerado renova sozinho — você não repete. A Tela 1 detalha o passo (inclui o
-túnel SSH quando o host é acessado remotamente).
+> Por que não um "código curto no celular" (device flow)? Porque o device flow do
+> Google **não permite escopos de Gmail** — só `email`/`profile`/`drive.file`/
+> `youtube`. Para o `gmail.modify` sensível, o loopback com colagem é o caminho mais
+> simples que as regras do Google permitem.
+
+Alternativa por terminal (power users), equivalente:
+`OAUTH_PORT=8765 python -m src.orquestrador --conta <nome> --login`.
 
 ## Nota de build
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -34,6 +36,8 @@ from src import orquestrador as orq          # noqa: E402
 from src import sugestor                       # noqa: E402
 from src.gmail_client import CREDENTIALS_PATH  # noqa: E402
 from src.llm_client import LLMClient           # noqa: E402
+
+from . import oauth                            # noqa: E402
 
 BASE_DIR = orq.BASE_DIR
 CONFIG_DIR = orq.CONFIG_DIR
@@ -141,6 +145,16 @@ class Job:
 
 JOB = Job()
 
+# Estados OAuth pendentes por conta (entre "gerar URL" e "colar resposta").
+# Single-worker: um dict em memória basta; se o add-on reiniciar, refaz o passo 1.
+_PENDENTES: dict[str, str] = {}
+
+
+def _slug(nome: str) -> str:
+    """Nome de conta seguro para virar pasta: minúsculo, [a-z0-9_-]."""
+    s = re.sub(r"[^a-z0-9_-]+", "-", (nome or "").strip().lower()).strip("-")
+    return s[:40]
+
 
 # ------------------------------------------------------------- estado/contas
 def contas_status() -> list[dict]:
@@ -188,12 +202,53 @@ def criar_app() -> Flask:
         return render_template("index.html", passos=_passos(""),
                                credenciais_ok=os.path.exists(CREDENTIALS_PATH))
 
-    # ---- Tela 1: conta Google
+    # ---- Tela 1: conta Google (OAuth de 2 passos, sem terminal)
     @app.route("/conta")
     def conta():
-        return render_template("conta.html", passos=_passos("conta"),
-                               credenciais_ok=os.path.exists(CREDENTIALS_PATH),
-                               oauth_port=os.environ.get("OAUTH_PORT", "8765"))
+        return render_template(
+            "conta.html", passos=_passos("conta"),
+            credenciais_ok=os.path.exists(CREDENTIALS_PATH),
+            auth_url=request.args.get("auth_url"),
+            conta_nome=request.args.get("conta", ""),
+            erro=request.args.get("erro"),
+            sucesso=request.args.get("sucesso"))
+
+    @app.route("/conta/iniciar", methods=["POST"])
+    def conta_iniciar():
+        nome = _slug(request.form.get("conta", ""))
+        if not nome:
+            return redirect(url_for("conta", erro="Informe um nome para a conta."))
+        if not os.path.exists(CREDENTIALS_PATH):
+            return redirect(url_for("conta",
+                            erro="Falta o credentials.json (veja abaixo)."))
+        try:
+            url, state = oauth.gerar_url(CREDENTIALS_PATH)
+        except Exception as e:
+            return redirect(url_for("conta", erro=f"Erro ao gerar o link: {e}"))
+        _PENDENTES[nome] = state
+        return redirect(url_for("conta", auth_url=url, conta=nome))
+
+    @app.route("/conta/concluir", methods=["POST"])
+    def conta_concluir():
+        nome = _slug(request.form.get("conta", ""))
+        resposta = request.form.get("resposta_url", "")
+        state = _PENDENTES.get(nome)
+        if not state:
+            return redirect(url_for("conta", conta=nome,
+                            erro="Sessão expirada — gere o link novamente."))
+        cdir = orq.conta_dir(nome)
+        token_path = os.path.join(cdir, "token.json")
+        try:
+            oauth.concluir(CREDENTIALS_PATH, state, resposta, token_path)
+        except Exception as e:
+            return redirect(url_for("conta", conta=nome,
+                            auth_url=request.form.get("auth_url"), erro=str(e)))
+        _PENDENTES.pop(nome, None)
+        # semeia um categorias.yaml inicial (mesmo comportamento do onboarding CLI)
+        cat_path = os.path.join(cdir, "categorias.yaml")
+        if not os.path.exists(cat_path) and os.path.exists(orq.CATEGORIAS_EXEMPLO):
+            shutil.copy(orq.CATEGORIAS_EXEMPLO, cat_path)
+        return redirect(url_for("conta", sucesso=nome))
 
     # ---- Tela 2: endpoint do LLM
     @app.route("/endpoint", methods=["GET", "POST"])
