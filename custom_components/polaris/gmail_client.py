@@ -1,8 +1,10 @@
 """Gmail client — gmail.modify scope only (label + archive + trash).
 
-HA integration flavor: the `service` (googleapiclient) is ALWAYS injected —
-the engine builds it with the access token managed by Home Assistant
-(OAuth2Session refreshes it). There is no token.json and no login logic here.
+HA integration flavor: talks to the Gmail REST API directly over HTTPS with
+`requests`, using the access token managed by Home Assistant (OAuth2Session
+refreshes it). No google-api-python-client / oauth2client dependency — those
+drag in a heavy, fragile chain (oauth2client → pycryptodome → cffi) that
+breaks on some HA runtimes. A single fresh token is injected per run.
 
 Never deletes permanently: trashing is always users.messages.trash.
 """
@@ -10,6 +12,10 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+
+import requests
+
+API = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 
 @dataclass
@@ -26,20 +32,40 @@ class EmailMsg:
     label_ids: list[str] = field(default_factory=list)
 
 
+class HistoryExpirada(Exception):
+    """startHistoryId too old (Gmail returned 404). Caller uses the fallback."""
+
+
 class GmailClient:
-    def __init__(self, service):
-        self.service = service
+    def __init__(self, access_token: str, timeout: int = 30):
+        self.session = requests.Session()
+        self.session.headers["Authorization"] = f"Bearer {access_token}"
+        self.timeout = timeout
         self._labels_cache: dict[str, str] | None = None  # name -> id
+
+    # ------------------------------------------------------------- HTTP
+    def _get(self, path: str, params: dict | None = None,
+             allow_404: bool = False) -> dict:
+        r = self.session.get(f"{API}{path}", params=params, timeout=self.timeout)
+        if allow_404 and r.status_code == 404:
+            raise HistoryExpirada()
+        r.raise_for_status()
+        return r.json()
+
+    def _post(self, path: str, body: dict | None = None) -> dict:
+        r = self.session.post(f"{API}{path}", json=body or {}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json() if r.content else {}
 
     # --------------------------------------------------------------- profile
     def get_profile(self) -> dict:
         """messagesTotal + current historyId (used by bootstrap and diagnostics)."""
-        return self.service.users().getProfile(userId="me").execute()
+        return self._get("/profile")
 
     # --------------------------------------------------------------- labels
     def _carregar_labels(self) -> dict[str, str]:
         if self._labels_cache is None:
-            resp = self.service.users().labels().list(userId="me").execute()
+            resp = self._get("/labels")
             self._labels_cache = {l["name"]: l["id"] for l in resp.get("labels", [])}
         return self._labels_cache
 
@@ -48,19 +74,11 @@ class GmailClient:
         cache = self._carregar_labels()
         if nome in cache:
             return cache[nome]
-        criada = (
-            self.service.users()
-            .labels()
-            .create(
-                userId="me",
-                body={
-                    "name": nome,
-                    "labelListVisibility": "labelShow",
-                    "messageListVisibility": "show",
-                },
-            )
-            .execute()
-        )
+        criada = self._post("/labels", {
+            "name": nome,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show",
+        })
         cache[nome] = criada["id"]
         return criada["id"]
 
@@ -73,39 +91,27 @@ class GmailClient:
         falls back to messages.list (see motor).
         historyTypes=messageAdded avoids reprocessing Polaris' own actions.
         """
-        from googleapiclient.errors import HttpError
         msgs: dict[str, dict] = {}
         novo_hid: str | None = None
         page_token = None
-        try:
-            while True:
-                resp = (
-                    self.service.users()
-                    .history()
-                    .list(
-                        userId="me",
-                        startHistoryId=start_history_id,
-                        historyTypes=["messageAdded"],
-                        pageToken=page_token,
-                    )
-                    .execute()
-                )
-                novo_hid = resp.get("historyId", novo_hid)
-                for h in resp.get("history", []):
-                    for ma in h.get("messagesAdded", []):
-                        m = ma["message"]
-                        # ignore drafts/sent and the Trash itself
-                        labels = m.get("labelIds", [])
-                        if "DRAFT" in labels or "SENT" in labels or "TRASH" in labels:
-                            continue
-                        msgs[m["id"]] = {"id": m["id"], "threadId": m["threadId"]}
-                page_token = resp.get("nextPageToken")
-                if not page_token:
-                    break
-        except HttpError as e:
-            if e.resp.status == 404:
-                raise HistoryExpirada() from e
-            raise
+        while True:
+            params = {"startHistoryId": start_history_id,
+                      "historyTypes": "messageAdded"}
+            if page_token:
+                params["pageToken"] = page_token
+            resp = self._get("/history", params, allow_404=True)
+            novo_hid = resp.get("historyId", novo_hid)
+            for h in resp.get("history", []):
+                for ma in h.get("messagesAdded", []):
+                    m = ma["message"]
+                    # ignore drafts/sent and the Trash itself
+                    labels = m.get("labelIds", [])
+                    if "DRAFT" in labels or "SENT" in labels or "TRASH" in labels:
+                        continue
+                    msgs[m["id"]] = {"id": m["id"], "threadId": m["threadId"]}
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
         return list(msgs.values()), novo_hid
 
     def messages_list(self, query: str, max_results: int | None = None) -> list[dict]:
@@ -113,12 +119,10 @@ class GmailClient:
         out: list[dict] = []
         page_token = None
         while True:
-            resp = (
-                self.service.users()
-                .messages()
-                .list(userId="me", q=query, pageToken=page_token, maxResults=500)
-                .execute()
-            )
+            params = {"q": query, "maxResults": 500}
+            if page_token:
+                params["pageToken"] = page_token
+            resp = self._get("/messages", params)
             out.extend(resp.get("messages", []) or [])
             if max_results and len(out) >= max_results:
                 return out[:max_results]
@@ -131,13 +135,8 @@ class GmailClient:
     def get_meta(self, msg_id: str) -> dict:
         """Sender/subject only (format=metadata) — cheap for bulk scans
         (e.g. category suggestions) without downloading the body."""
-        raw = (
-            self.service.users()
-            .messages()
-            .get(userId="me", id=msg_id, format="metadata",
-                 metadataHeaders=["From", "Subject"])
-            .execute()
-        )
+        raw = self._get(f"/messages/{msg_id}", {
+            "format": "metadata", "metadataHeaders": ["From", "Subject"]})
         headers = {h["name"].lower(): h["value"]
                    for h in raw.get("payload", {}).get("headers", [])}
         return {"id": msg_id,
@@ -145,22 +144,12 @@ class GmailClient:
                 "assunto": headers.get("subject", "")}
 
     def get_email(self, msg_id: str) -> EmailMsg:
-        raw = (
-            self.service.users()
-            .messages()
-            .get(userId="me", id=msg_id, format="full")
-            .execute()
-        )
+        raw = self._get(f"/messages/{msg_id}", {"format": "full"})
         return self._parse_email(raw)
 
     def contar_mensagens_thread(self, thread_id: str) -> int:
         """Message count in the thread (rule: archive/trash only single-message threads)."""
-        t = (
-            self.service.users()
-            .threads()
-            .get(userId="me", id=thread_id, format="minimal")
-            .execute()
-        )
+        t = self._get(f"/threads/{thread_id}", {"format": "minimal"})
         return len(t.get("messages", []))
 
     @staticmethod
@@ -210,16 +199,9 @@ class GmailClient:
     def modificar(
         self, msg_id: str, add: list[str] | None = None, remove: list[str] | None = None
     ) -> None:
-        self.service.users().messages().modify(
-            userId="me",
-            id=msg_id,
-            body={"addLabelIds": add or [], "removeLabelIds": remove or []},
-        ).execute()
+        self._post(f"/messages/{msg_id}/modify",
+                   {"addLabelIds": add or [], "removeLabelIds": remove or []})
 
     def trash(self, msg_id: str) -> None:
         """Send to Trash (recoverable ~30 days). NEVER a permanent delete."""
-        self.service.users().messages().trash(userId="me", id=msg_id).execute()
-
-
-class HistoryExpirada(Exception):
-    """startHistoryId too old (Gmail returned 404). Caller uses the fallback."""
+        self._post(f"/messages/{msg_id}/trash")

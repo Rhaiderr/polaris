@@ -68,14 +68,6 @@ def prepare_account_dir(account_dir: str) -> None:
                      "your own Gmail labels", cat_path)
 
 
-def build_service(access_token: str):
-    """Build the Gmail API client from the HA-managed access token."""
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-    creds = Credentials(token=access_token)
-    return build("gmail", "v1", credentials=creds, cache_discovery=False)
-
-
 # ------------------------------------------------------------------ decision
 @dataclass
 class Plano:
@@ -309,7 +301,7 @@ def executar(access_token: str, cfg: MotorConfig, mode: str) -> dict:
     Never raises on LLM downtime: signals it via stats["skipped_reason"] /
     stats["interrupted"] — same semantics as the CLI (incremental catches up).
     """
-    gmail = GmailClient(build_service(access_token))
+    gmail = GmailClient(access_token)
     llm = LLMClient(base_url=cfg.llm_base_url, model=cfg.llm_model,
                     api_key=cfg.llm_api_key)
     if not llm.disponivel():
@@ -338,7 +330,7 @@ def rodar_sugestor(access_token: str, cfg: MotorConfig, max_n: int) -> list[dict
     """Sample the mailbox and return category suggestions (saved in account_dir)."""
     from . import sugestor
 
-    gmail = GmailClient(build_service(access_token))
+    gmail = GmailClient(access_token)
     llm = LLMClient(base_url=cfg.llm_base_url, model=cfg.llm_model,
                     api_key=cfg.llm_api_key)
     if not llm.disponivel():

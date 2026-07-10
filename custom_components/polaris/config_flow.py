@@ -74,12 +74,9 @@ class PolarisFlowHandler(
         """Token obtained — resolve the email (entry title/unique_id)."""
 
         def _profile() -> dict:
-            from google.oauth2.credentials import Credentials
-            from googleapiclient.discovery import build
+            from .gmail_client import GmailClient
 
-            creds = Credentials(token=data["token"]["access_token"])
-            service = build("gmail", "v1", credentials=creds, cache_discovery=False)
-            return service.users().getProfile(userId="me").execute()
+            return GmailClient(data["token"]["access_token"]).get_profile()
 
         try:
             profile = await self.hass.async_add_executor_job(_profile)
