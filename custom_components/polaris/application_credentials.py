@@ -1,8 +1,8 @@
-"""Plataforma application_credentials — o usuário cola client_id/secret UMA vez.
+"""application_credentials platform — the user pastes client_id/secret ONCE.
 
-O Home Assistant guarda a credencial e conduz o OAuth inteiro (via
-https://my.home-assistant.io/redirect/oauth). É o mesmo mecanismo das
-integrações Google oficiais (Calendar, Mail, etc.).
+Home Assistant stores the credential and drives the whole OAuth flow (via
+https://my.home-assistant.io/redirect/oauth). Same mechanism as the official
+Google integrations (Calendar, Mail, etc.).
 """
 from __future__ import annotations
 
@@ -20,5 +20,5 @@ async def async_get_description_placeholders(hass: HomeAssistant) -> dict[str, s
     return {
         "oauth_creds_url": "https://console.cloud.google.com/apis/credentials",
         "redirect_url": "https://my.home-assistant.io/redirect/oauth",
-        "docs_url": "https://github.com/Rhaiderr/polaris/blob/main/docs/gerar-credenciais-gmail.md",
+        "docs_url": "https://github.com/Rhaiderr/polaris/blob/main/docs/gmail-credentials.md",
     }

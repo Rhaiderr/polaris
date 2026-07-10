@@ -1,9 +1,9 @@
-"""Polaris — triagem de Gmail com LLM local, como integração nativa do HA.
+"""Polaris — Gmail triage with a local LLM, as a native HA integration.
 
-Cada conta Gmail é uma config entry (OAuth nativo, token renovado pelo HA).
-A triagem roda pelo serviço `polaris.executar`, pelo agendamento diário das
-opções, e reporta via evento `polaris_execucao` + notificação persistente +
-sensor de última execução.
+Each Gmail account is a config entry (native OAuth, token refreshed by HA).
+Triage runs through the `polaris.run_triage` service, through the daily
+schedule in the options, and reports via the `polaris_run_completed` event +
+a persistent notification + a last-run sensor.
 """
 from __future__ import annotations
 
@@ -25,28 +25,30 @@ from homeassistant.helpers.event import async_track_time_change
 
 from . import motor
 from .const import (
-    ATTR_CONTA,
+    ATTR_ACCOUNT,
     ATTR_DRY_RUN,
     ATTR_MAX,
-    ATTR_MODO,
-    ATTR_NUMEROS,
-    ATTR_REPROCESSAR,
-    CONF_AGENDAMENTO,
+    ATTR_MODE,
+    ATTR_NUMBERS,
+    ATTR_REPROCESS,
     CONF_DRY_RUN,
-    CONF_HORA,
     CONF_LLM_API_KEY,
     CONF_LLM_BASE_URL,
     CONF_LLM_MODEL,
-    CONF_MAX,
-    CONF_MODO_SOMBRA,
-    DEFAULT_HORA,
-    DEFAULT_MAX,
+    CONF_MAX_PER_RUN,
+    CONF_SCHEDULE_ENABLED,
+    CONF_SCHEDULE_TIME,
+    CONF_SHADOW_MODE,
+    DEFAULT_MAX_PER_RUN,
+    DEFAULT_SCHEDULE_TIME,
     DOMAIN,
-    EVENT_EXECUCAO,
-    SERVICE_ACEITAR,
-    SERVICE_EXECUTAR,
-    SERVICE_SUGERIR,
-    SIGNAL_EXECUCAO,
+    EVENT_RUN_COMPLETED,
+    MODE_FULL,
+    MODE_INCREMENTAL,
+    SERVICE_ACCEPT_CATEGORIES,
+    SERVICE_RUN_TRIAGE,
+    SERVICE_SUGGEST_CATEGORIES,
+    SIGNAL_RUN_DONE,
 )
 from .llm_client import LLMIndisponivel
 
@@ -54,30 +56,30 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SENSOR]
 
-# Uma execução por vez, entre TODAS as contas (equivale ao flock da CLI):
-# evita duas triagens concorrendo pelo mesmo endpoint LLM.
+# One run at a time across ALL accounts (equivalent to the CLI flock):
+# avoids two triage runs competing for the same LLM endpoint.
 _LOCK = asyncio.Lock()
 
-SCHEMA_EXECUTAR = vol.Schema({
-    vol.Optional(ATTR_CONTA): cv.string,
-    vol.Optional(ATTR_MODO, default="incremental"):
-        vol.In(["incremental", "completo"]),
+SCHEMA_RUN_TRIAGE = vol.Schema({
+    vol.Optional(ATTR_ACCOUNT): cv.string,
+    vol.Optional(ATTR_MODE, default=MODE_INCREMENTAL):
+        vol.In([MODE_INCREMENTAL, MODE_FULL]),
     vol.Optional(ATTR_MAX): cv.positive_int,
     vol.Optional(ATTR_DRY_RUN): cv.boolean,
-    vol.Optional(ATTR_REPROCESSAR, default=False): cv.boolean,
+    vol.Optional(ATTR_REPROCESS, default=False): cv.boolean,
 })
-SCHEMA_SUGERIR = vol.Schema({
-    vol.Required(ATTR_CONTA): cv.string,
+SCHEMA_SUGGEST = vol.Schema({
+    vol.Required(ATTR_ACCOUNT): cv.string,
     vol.Optional(ATTR_MAX, default=120): cv.positive_int,
 })
-SCHEMA_ACEITAR = vol.Schema({
-    vol.Required(ATTR_CONTA): cv.string,
-    vol.Required(ATTR_NUMEROS): cv.string,
+SCHEMA_ACCEPT = vol.Schema({
+    vol.Required(ATTR_ACCOUNT): cv.string,
+    vol.Required(ATTR_NUMBERS): cv.string,
 })
 
 
-class PolarisConta:
-    """Runtime de uma conta (config entry): sessão OAuth, paths e agenda."""
+class PolarisAccount:
+    """Per-account runtime (config entry): OAuth session, paths and schedule."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry,
                  session: config_entry_oauth2_flow.OAuth2Session) -> None:
@@ -85,142 +87,142 @@ class PolarisConta:
         self.entry = entry
         self.session = session
         self.email: str = entry.unique_id or entry.title
-        self.conta_dir: str = hass.config.path(DOMAIN, self.email)
-        self.ultima_stats: dict | None = None
-        self._unsub_agenda = None
+        self.account_dir: str = hass.config.path(DOMAIN, self.email)
+        self.last_stats: dict | None = None
+        self._unsub_schedule = None
 
     # ------------------------------------------------------------- setup
-    def preparar(self) -> None:
-        """(executor) Cria o diretório da conta + categorias.yaml inicial."""
-        motor.preparar_conta_dir(self.conta_dir)
+    def prepare(self) -> None:
+        """(executor) Create the account dir + initial categorias.yaml."""
+        motor.prepare_account_dir(self.account_dir)
 
-    def agendar(self) -> None:
+    def schedule(self) -> None:
         opts = self.entry.options
-        if not opts.get(CONF_AGENDAMENTO):
+        if not opts.get(CONF_SCHEDULE_ENABLED):
             return
-        hora = str(opts.get(CONF_HORA, DEFAULT_HORA))
+        hora = str(opts.get(CONF_SCHEDULE_TIME, DEFAULT_SCHEDULE_TIME))
         partes = hora.split(":")
         try:
             h, m = int(partes[0]), int(partes[1])
         except (ValueError, IndexError):
-            _LOGGER.error("Hora de agendamento inválida: %r", hora)
+            _LOGGER.error("Invalid schedule time: %r", hora)
             return
-        self._unsub_agenda = async_track_time_change(
-            self.hass, self._agendado, hour=h, minute=m, second=0)
-        _LOGGER.info("Conta %s agendada para %02d:%02d (diário)",
+        self._unsub_schedule = async_track_time_change(
+            self.hass, self._scheduled, hour=h, minute=m, second=0)
+        _LOGGER.info("Account %s scheduled for %02d:%02d (daily)",
                      self.email, h, m)
 
     @callback
-    def _agendado(self, _now) -> None:
-        self.hass.async_create_task(self.async_executar())
+    def _scheduled(self, _now) -> None:
+        self.hass.async_create_task(self.async_run_triage())
 
-    def cancelar_agenda(self) -> None:
-        if self._unsub_agenda:
-            self._unsub_agenda()
-            self._unsub_agenda = None
+    def cancel_schedule(self) -> None:
+        if self._unsub_schedule:
+            self._unsub_schedule()
+            self._unsub_schedule = None
 
     # ------------------------------------------------------------- config
     def _cfg(self, dry_run: bool | None = None, max_n: int | None = None,
-             reprocessar: bool = False) -> motor.MotorConfig:
+             reprocess: bool = False) -> motor.MotorConfig:
         o = self.entry.options
         return motor.MotorConfig(
-            conta_dir=self.conta_dir,
+            account_dir=self.account_dir,
             llm_base_url=o.get(CONF_LLM_BASE_URL, ""),
             llm_model=o.get(CONF_LLM_MODEL, ""),
             llm_api_key=o.get(CONF_LLM_API_KEY, ""),
-            modo_sombra=o.get(CONF_MODO_SOMBRA, True),
+            shadow_mode=o.get(CONF_SHADOW_MODE, True),
             dry_run=o.get(CONF_DRY_RUN, False) if dry_run is None else dry_run,
-            reprocessar=reprocessar,
-            max_n=max_n if max_n is not None else int(o.get(CONF_MAX, DEFAULT_MAX)),
+            reprocess=reprocess,
+            max_n=max_n if max_n is not None
+            else int(o.get(CONF_MAX_PER_RUN, DEFAULT_MAX_PER_RUN)),
         )
 
-    def _endpoint_configurado(self) -> bool:
+    def _endpoint_configured(self) -> bool:
         o = self.entry.options
         if o.get(CONF_LLM_BASE_URL) and o.get(CONF_LLM_MODEL):
             return True
         persistent_notification.async_create(
             self.hass,
-            f"A conta **{self.email}** ainda não tem o endpoint do modelo "
-            "configurado. Abra as opções da integração Polaris e preencha "
-            "a URL e o modelo.",
-            title="Polaris — configure o endpoint do LLM",
+            f"Account **{self.email}** has no model endpoint configured yet. "
+            "Open the Polaris integration options and fill in the URL and "
+            "the model name.",
+            title="Polaris — configure the LLM endpoint",
             notification_id=f"polaris_endpoint_{self.entry.entry_id}",
         )
         return False
 
     async def _token(self) -> str:
-        """Garante token válido (dispara reauth se o refresh morreu)."""
+        """Ensure a valid token (starts reauth if the refresh token died)."""
         try:
             await self.session.async_ensure_token_valid()
         except ClientResponseError as err:
             if err.status in (400, 401):
                 self.entry.async_start_reauth(self.hass)
                 raise ConfigEntryAuthFailed(
-                    f"Token da conta {self.email} expirou") from err
+                    f"Token for account {self.email} expired") from err
             raise
         return self.session.token["access_token"]
 
-    # ------------------------------------------------------------ execução
-    async def async_executar(self, modo: str = "incremental",
-                             max_n: int | None = None,
-                             dry_run: bool | None = None,
-                             reprocessar: bool = False) -> None:
-        if not self._endpoint_configurado():
+    # ------------------------------------------------------------ triage run
+    async def async_run_triage(self, mode: str = MODE_INCREMENTAL,
+                               max_n: int | None = None,
+                               dry_run: bool | None = None,
+                               reprocess: bool = False) -> None:
+        if not self._endpoint_configured():
             return
         async with _LOCK:
             token = await self._token()
-            cfg = self._cfg(dry_run=dry_run, max_n=max_n,
-                            reprocessar=reprocessar)
-            _LOGGER.info("Triagem da conta %s (modo=%s dry_run=%s max=%s)",
-                         self.email, modo, cfg.dry_run, cfg.max_n)
+            cfg = self._cfg(dry_run=dry_run, max_n=max_n, reprocess=reprocess)
+            _LOGGER.info("Triage for account %s (mode=%s dry_run=%s max=%s)",
+                         self.email, mode, cfg.dry_run, cfg.max_n)
             stats = await self.hass.async_add_executor_job(
-                motor.executar, token, cfg, modo)
+                motor.executar, token, cfg, mode)
 
-        self.ultima_stats = stats
+        self.last_stats = stats
         async_dispatcher_send(self.hass,
-                              SIGNAL_EXECUCAO.format(self.entry.entry_id))
-        self.hass.bus.async_fire(EVENT_EXECUCAO,
-                                 {"conta": self.email, **stats})
-        self._notificar(stats, cfg.dry_run)
+                              SIGNAL_RUN_DONE.format(self.entry.entry_id))
+        self.hass.bus.async_fire(EVENT_RUN_COMPLETED,
+                                 {"account": self.email, **stats})
+        self._notify(stats, cfg.dry_run)
 
-    def _notificar(self, stats: dict, dry_run: bool) -> None:
-        nid = f"polaris_resumo_{self.entry.entry_id}"
-        if stats.get("pulado"):
+    def _notify(self, stats: dict, dry_run: bool) -> None:
+        nid = f"polaris_summary_{self.entry.entry_id}"
+        if stats.get("skipped_reason"):
             persistent_notification.async_create(
                 self.hass,
-                f"Conta **{self.email}**: o endpoint do modelo não respondeu. "
-                "Execução pulada — a próxima recupera o atraso.",
-                title="Polaris — modelo indisponível",
+                f"Account **{self.email}**: the model endpoint did not "
+                "respond. Run skipped — the next one catches up.",
+                title="Polaris — model unavailable",
                 notification_id=nid)
             return
         if stats.get("bootstrap"):
             persistent_notification.async_create(
                 self.hass,
-                f"Conta **{self.email}** inicializada: o cursor de "
-                "sincronização foi fixado. Novos emails serão triados a "
-                "partir de agora; para o backlog, chame o serviço "
-                "`polaris.executar` com modo `completo`.",
-                title="Polaris — conta inicializada",
+                f"Account **{self.email}** initialized: the sync cursor is "
+                "pinned. New emails will be triaged from now on; for the "
+                "backlog, call the `polaris.run_triage` service with mode "
+                "`full`.",
+                title="Polaris — account initialized",
                 notification_id=nid)
             return
         corpo = (
-            f"Conta **{self.email}**{' (simulação)' if dry_run else ''}: "
-            f"{stats.get('processados', 0)} email(s) triado(s) — "
-            f"{stats.get('label', 0)} rotulado(s), "
-            f"{stats.get('arquivar', 0)} arquivado(s), "
-            f"{stats.get('revisar', 0)} em Revisar, "
-            f"{stats.get('excluir', 0)} na Lixeira, "
-            f"{stats.get('sombra', 0)} candidato(s) à Lixeira."
+            f"Account **{self.email}**{' (dry run)' if dry_run else ''}: "
+            f"{stats.get('processed', 0)} email(s) triaged — "
+            f"{stats.get('label', 0)} labeled, "
+            f"{stats.get('archive', 0)} archived, "
+            f"{stats.get('review', 0)} in Review, "
+            f"{stats.get('trash', 0)} trashed, "
+            f"{stats.get('shadow', 0)} trash candidate(s)."
         )
-        if stats.get("interrompido"):
-            corpo += " ⚠️ O modelo caiu no meio; a próxima execução continua."
+        if stats.get("interrupted"):
+            corpo += " ⚠️ The model went down mid-run; the next run continues."
         persistent_notification.async_create(
-            self.hass, corpo, title="Polaris — resumo da triagem",
+            self.hass, corpo, title="Polaris — triage summary",
             notification_id=nid)
 
-    # ------------------------------------------------------------ sugestor
-    async def async_sugerir(self, max_n: int) -> None:
-        if not self._endpoint_configurado():
+    # ------------------------------------------------------------ suggestor
+    async def async_suggest(self, max_n: int) -> None:
+        if not self._endpoint_configured():
             return
         async with _LOCK:
             token = await self._token()
@@ -231,77 +233,79 @@ class PolarisConta:
             except LLMIndisponivel as err:
                 persistent_notification.async_create(
                     self.hass,
-                    f"Conta **{self.email}**: o modelo não respondeu ({err}).",
-                    title="Polaris — sugestor",
-                    notification_id=f"polaris_sugestoes_{self.entry.entry_id}")
+                    f"Account **{self.email}**: the model did not respond "
+                    f"({err}).",
+                    title="Polaris — suggestor",
+                    notification_id=f"polaris_suggest_{self.entry.entry_id}")
                 return
         if not sugestoes:
-            corpo = (f"Conta **{self.email}**: nenhuma categoria nova a "
-                     "sugerir — as atuais já cobrem a caixa.")
+            corpo = (f"Account **{self.email}**: nothing new to suggest — "
+                     "the current categories already cover the mailbox.")
         else:
             linhas = "\n".join(
                 f"{i}. **{s['nome']}** (~{s['quantos']} emails) — {s['descricao']}"
                 for i, s in enumerate(sugestoes, 1))
             corpo = (
-                f"Sugestões para **{self.email}**:\n\n{linhas}\n\n"
-                "Para aceitar, chame o serviço `polaris.aceitar_categorias` "
-                f"com conta `{self.email}` e números (ex.: `1,3` ou `todas`)."
+                f"Suggestions for **{self.email}**:\n\n{linhas}\n\n"
+                "To accept, call the `polaris.accept_categories` service "
+                f"with account `{self.email}` and numbers (e.g. `1,3` or "
+                "`all`)."
             )
         persistent_notification.async_create(
-            self.hass, corpo, title="Polaris — sugestões de categorias",
-            notification_id=f"polaris_sugestoes_{self.entry.entry_id}")
+            self.hass, corpo, title="Polaris — category suggestions",
+            notification_id=f"polaris_suggest_{self.entry.entry_id}")
 
-    async def async_aceitar(self, numeros: str) -> None:
+    async def async_accept(self, numbers: str) -> None:
         nomes = await self.hass.async_add_executor_job(
-            motor.aceitar_sugestoes, self.conta_dir, numeros)
-        corpo = (f"Conta **{self.email}**: {len(nomes)} categoria(s) "
-                 f"adicionada(s): {', '.join(nomes)}." if nomes
-                 else f"Conta **{self.email}**: nada a aceitar.")
+            motor.aceitar_sugestoes, self.account_dir, numbers)
+        corpo = (f"Account **{self.email}**: {len(nomes)} category(ies) "
+                 f"added: {', '.join(nomes)}." if nomes
+                 else f"Account **{self.email}**: nothing to accept.")
         persistent_notification.async_create(
-            self.hass, corpo, title="Polaris — categorias",
-            notification_id=f"polaris_sugestoes_{self.entry.entry_id}")
+            self.hass, corpo, title="Polaris — categories",
+            notification_id=f"polaris_suggest_{self.entry.entry_id}")
 
 
-# ---------------------------------------------------------------- serviços
-def _contas(hass: HomeAssistant, conta: str | None) -> list[PolarisConta]:
+# ---------------------------------------------------------------- services
+def _accounts(hass: HomeAssistant, account: str | None) -> list[PolarisAccount]:
     todas = [d for d in hass.data.get(DOMAIN, {}).values()
-             if isinstance(d, PolarisConta)]
-    if conta:
-        alvo = [d for d in todas if d.email == conta]
+             if isinstance(d, PolarisAccount)]
+    if account:
+        alvo = [d for d in todas if d.email == account]
         if not alvo:
-            raise vol.Invalid(f"Conta '{conta}' não encontrada. "
-                              f"Configuradas: {[d.email for d in todas]}")
+            raise vol.Invalid(f"Account '{account}' not found. "
+                              f"Configured: {[d.email for d in todas]}")
         return alvo
     return todas
 
 
 @callback
-def _registrar_servicos(hass: HomeAssistant) -> None:
-    if hass.services.has_service(DOMAIN, SERVICE_EXECUTAR):
+def _register_services(hass: HomeAssistant) -> None:
+    if hass.services.has_service(DOMAIN, SERVICE_RUN_TRIAGE):
         return
 
-    async def _executar(call: ServiceCall) -> None:
-        for d in _contas(hass, call.data.get(ATTR_CONTA)):
-            await d.async_executar(
-                modo=call.data[ATTR_MODO],
+    async def _run_triage(call: ServiceCall) -> None:
+        for d in _accounts(hass, call.data.get(ATTR_ACCOUNT)):
+            await d.async_run_triage(
+                mode=call.data[ATTR_MODE],
                 max_n=call.data.get(ATTR_MAX),
                 dry_run=call.data.get(ATTR_DRY_RUN),
-                reprocessar=call.data[ATTR_REPROCESSAR])
+                reprocess=call.data[ATTR_REPROCESS])
 
-    async def _sugerir(call: ServiceCall) -> None:
-        for d in _contas(hass, call.data[ATTR_CONTA]):
-            await d.async_sugerir(call.data[ATTR_MAX])
+    async def _suggest(call: ServiceCall) -> None:
+        for d in _accounts(hass, call.data[ATTR_ACCOUNT]):
+            await d.async_suggest(call.data[ATTR_MAX])
 
-    async def _aceitar(call: ServiceCall) -> None:
-        for d in _contas(hass, call.data[ATTR_CONTA]):
-            await d.async_aceitar(call.data[ATTR_NUMEROS])
+    async def _accept(call: ServiceCall) -> None:
+        for d in _accounts(hass, call.data[ATTR_ACCOUNT]):
+            await d.async_accept(call.data[ATTR_NUMBERS])
 
-    hass.services.async_register(DOMAIN, SERVICE_EXECUTAR, _executar,
-                                 schema=SCHEMA_EXECUTAR)
-    hass.services.async_register(DOMAIN, SERVICE_SUGERIR, _sugerir,
-                                 schema=SCHEMA_SUGERIR)
-    hass.services.async_register(DOMAIN, SERVICE_ACEITAR, _aceitar,
-                                 schema=SCHEMA_ACEITAR)
+    hass.services.async_register(DOMAIN, SERVICE_RUN_TRIAGE, _run_triage,
+                                 schema=SCHEMA_RUN_TRIAGE)
+    hass.services.async_register(DOMAIN, SERVICE_SUGGEST_CATEGORIES, _suggest,
+                                 schema=SCHEMA_SUGGEST)
+    hass.services.async_register(DOMAIN, SERVICE_ACCEPT_CATEGORIES, _accept,
+                                 schema=SCHEMA_ACCEPT)
 
 
 # ------------------------------------------------------------- entry setup
@@ -314,17 +318,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await session.async_ensure_token_valid()
     except ClientResponseError as err:
         if err.status in (400, 401):
-            raise ConfigEntryAuthFailed("Token OAuth inválido") from err
+            raise ConfigEntryAuthFailed("Invalid OAuth token") from err
         raise ConfigEntryNotReady from err
     except ClientError as err:
         raise ConfigEntryNotReady from err
 
-    conta = PolarisConta(hass, entry, session)
-    await hass.async_add_executor_job(conta.preparar)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = conta
+    account = PolarisAccount(hass, entry, session)
+    await hass.async_add_executor_job(account.prepare)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = account
 
-    _registrar_servicos(hass)
-    conta.agendar()
+    _register_services(hass)
+    account.schedule()
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -336,7 +340,8 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    conta: PolarisConta | None = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-    if conta:
-        conta.cancelar_agenda()
+    account: PolarisAccount | None = hass.data.get(DOMAIN, {}).pop(
+        entry.entry_id, None)
+    if account:
+        account.cancel_schedule()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

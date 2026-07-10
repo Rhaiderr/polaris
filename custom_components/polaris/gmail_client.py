@@ -1,10 +1,10 @@
-"""Cliente Gmail — escopo gmail.modify apenas (label + archive + trash).
+"""Gmail client — gmail.modify scope only (label + archive + trash).
 
-Versão da integração HA: o `service` (googleapiclient) é SEMPRE injetado —
-quem constrói é o motor, com o access token gerenciado pelo Home Assistant
-(OAuth2Session renova sozinho). Não há token.json nem login próprio aqui.
+HA integration flavor: the `service` (googleapiclient) is ALWAYS injected —
+the engine builds it with the access token managed by Home Assistant
+(OAuth2Session refreshes it). There is no token.json and no login logic here.
 
-Nunca faz delete permanente: exclusão é sempre users.messages.trash.
+Never deletes permanently: trashing is always users.messages.trash.
 """
 from __future__ import annotations
 
@@ -14,26 +14,26 @@ from dataclasses import dataclass, field
 
 @dataclass
 class EmailMsg:
-    """Visão enxuta de uma mensagem, pronta para o classificador."""
+    """Lean view of a message, ready for the classifier."""
     id: str
     thread_id: str
     remetente: str = ""
     assunto: str = ""
     destinatario: str = ""
     data: str = ""
-    tem_list_unsubscribe: bool = False   # sinal determinístico p/ exclusão
-    corpo: str = ""                       # texto (não confiável — entrada do LLM)
+    tem_list_unsubscribe: bool = False   # deterministic signal for trashing
+    corpo: str = ""                       # text (untrusted — LLM input)
     label_ids: list[str] = field(default_factory=list)
 
 
 class GmailClient:
     def __init__(self, service):
         self.service = service
-        self._labels_cache: dict[str, str] | None = None  # nome -> id
+        self._labels_cache: dict[str, str] | None = None  # name -> id
 
-    # --------------------------------------------------------------- perfil
+    # --------------------------------------------------------------- profile
     def get_profile(self) -> dict:
-        """messagesTotal + historyId atual (usado no bootstrap e diagnóstico)."""
+        """messagesTotal + current historyId (used by bootstrap and diagnostics)."""
         return self.service.users().getProfile(userId="me").execute()
 
     # --------------------------------------------------------------- labels
@@ -44,7 +44,7 @@ class GmailClient:
         return self._labels_cache
 
     def garantir_label(self, nome: str) -> str:
-        """Retorna o id da label, criando-a se não existir (aninhamento por '/')."""
+        """Return the label id, creating the label if missing ('/' nests)."""
         cache = self._carregar_labels()
         if nome in cache:
             return cache[nome]
@@ -64,14 +64,14 @@ class GmailClient:
         cache[nome] = criada["id"]
         return criada["id"]
 
-    # ---------------------------------------------------- sincronização
+    # ---------------------------------------------------- sync
     def history_added(self, start_history_id: str) -> tuple[list[dict], str | None]:
-        """IDs de mensagens ADICIONADAS desde start_history_id.
+        """IDs of messages ADDED since start_history_id.
 
-        Retorna (lista de {'id','threadId'}, novo_history_id).
-        Levanta HistoryExpirada (404) quando o cursor é antigo demais — o
-        chamador cai no fallback messages.list (ver motor).
-        historyTypes=messageAdded evita reprocessar as ações do próprio Polaris.
+        Returns (list of {'id','threadId'}, new_history_id).
+        Raises HistoryExpirada (404) when the cursor is too old — the caller
+        falls back to messages.list (see motor).
+        historyTypes=messageAdded avoids reprocessing Polaris' own actions.
         """
         from googleapiclient.errors import HttpError
         msgs: dict[str, dict] = {}
@@ -94,7 +94,7 @@ class GmailClient:
                 for h in resp.get("history", []):
                     for ma in h.get("messagesAdded", []):
                         m = ma["message"]
-                        # ignora rascunhos/enviados e a própria Lixeira
+                        # ignore drafts/sent and the Trash itself
                         labels = m.get("labelIds", [])
                         if "DRAFT" in labels or "SENT" in labels or "TRASH" in labels:
                             continue
@@ -109,7 +109,7 @@ class GmailClient:
         return list(msgs.values()), novo_hid
 
     def messages_list(self, query: str, max_results: int | None = None) -> list[dict]:
-        """messages.list paginado. Retorna [{'id','threadId'}]. query no estilo Gmail."""
+        """Paginated messages.list. Returns [{'id','threadId'}]. Gmail-style query."""
         out: list[dict] = []
         page_token = None
         while True:
@@ -127,10 +127,10 @@ class GmailClient:
                 break
         return out
 
-    # ----------------------------------------------------- leitura de msg
+    # ----------------------------------------------------- message reads
     def get_meta(self, msg_id: str) -> dict:
-        """Só remetente/assunto (format=metadata) — barato para varreduras
-        em massa (ex.: sugestão de categorias), sem baixar o corpo."""
+        """Sender/subject only (format=metadata) — cheap for bulk scans
+        (e.g. category suggestions) without downloading the body."""
         raw = (
             self.service.users()
             .messages()
@@ -154,7 +154,7 @@ class GmailClient:
         return self._parse_email(raw)
 
     def contar_mensagens_thread(self, thread_id: str) -> int:
-        """Nº de mensagens na thread (regra: arquivar/trash só em thread única)."""
+        """Message count in the thread (rule: archive/trash only single-message threads)."""
         t = (
             self.service.users()
             .threads()
@@ -182,7 +182,7 @@ class GmailClient:
 
     @staticmethod
     def _extrair_corpo(payload: dict, limite: int = 4000) -> str:
-        """Extrai texto de text/plain (preferido) ou text/html, recursivo em multipart."""
+        """Extract text from text/plain (preferred) or text/html, recursing into multipart."""
         def decode(data: str) -> str:
             return base64.urlsafe_b64decode(data.encode()).decode("utf-8", "replace")
 
@@ -191,13 +191,13 @@ class GmailClient:
         if mime == "text/plain" and body.get("data"):
             return decode(body["data"])[:limite]
         if mime.startswith("multipart/"):
-            # tenta plain antes de html
+            # try plain before html
             partes = payload.get("parts", [])
             for alvo in ("text/plain", "text/html"):
                 for p in partes:
                     if p.get("mimeType") == alvo and p.get("body", {}).get("data"):
                         return decode(p["body"]["data"])[:limite]
-            # multipart aninhado
+            # nested multipart
             for p in partes:
                 texto = GmailClient._extrair_corpo(p, limite)
                 if texto:
@@ -206,7 +206,7 @@ class GmailClient:
             return decode(body["data"])[:limite]
         return ""
 
-    # -------------------------------------------------------- modificações
+    # -------------------------------------------------------- mutations
     def modificar(
         self, msg_id: str, add: list[str] | None = None, remove: list[str] | None = None
     ) -> None:
@@ -217,9 +217,9 @@ class GmailClient:
         ).execute()
 
     def trash(self, msg_id: str) -> None:
-        """Manda para a Lixeira (recuperável ~30 dias). NUNCA delete permanente."""
+        """Send to Trash (recoverable ~30 days). NEVER a permanent delete."""
         self.service.users().messages().trash(userId="me", id=msg_id).execute()
 
 
 class HistoryExpirada(Exception):
-    """startHistoryId antigo demais (Gmail retornou 404). Chamador usa fallback."""
+    """startHistoryId too old (Gmail returned 404). Caller uses the fallback."""

@@ -36,15 +36,15 @@
           "llm_base_url": "Model endpoint URL (ends with /v1)",
           "llm_model": "Model name",
           "llm_api_key": "API key (optional)",
-          "agendamento_ativo": "Run automatically every day",
-          "hora": "Daily run time",
-          "max_por_execucao": "Maximum emails per run",
-          "modo_sombra_exclusao": "Shadow mode (trash candidates only get a label)",
+          "schedule_enabled": "Run automatically every day",
+          "schedule_time": "Daily run time",
+          "max_per_run": "Maximum emails per run",
+          "shadow_mode": "Shadow mode (trash candidates only get a label)",
           "dry_run": "Dry run (nothing is applied to Gmail)"
         },
         "data_description": {
           "llm_base_url": "Any OpenAI-compatible endpoint (LM Studio, Ollama, vLLM...).",
-          "modo_sombra_exclusao": "Turn off only after reviewing the candidates for a few days."
+          "shadow_mode": "Turn off only after reviewing the candidates for a few days."
         }
       }
     }
@@ -54,23 +54,23 @@
   },
   "entity": {
     "sensor": {
-      "ultima_execucao": {
+      "last_run": {
         "name": "Last run"
       }
     }
   },
   "services": {
-    "executar": {
+    "run_triage": {
       "name": "Run triage",
       "description": "Runs email triage for one account (or all).",
       "fields": {
-        "conta": {
+        "account": {
           "name": "Account",
           "description": "Account email. Empty = all configured accounts."
         },
-        "modo": {
+        "mode": {
           "name": "Mode",
-          "description": "incremental (new emails) or completo (backlog)."
+          "description": "incremental (new emails) or full (backlog)."
         },
         "max": {
           "name": "Maximum",
@@ -80,37 +80,37 @@
           "name": "Dry run",
           "description": "Applies nothing to Gmail, only logs what it would do."
         },
-        "reprocessar": {
+        "reprocess": {
           "name": "Reprocess",
           "description": "Do not skip emails already processed by Polaris."
         }
       }
     },
-    "sugerir_categorias": {
+    "suggest_categories": {
       "name": "Suggest categories",
       "description": "Samples the mailbox and suggests new categories (notification with the list).",
       "fields": {
-        "conta": {
+        "account": {
           "name": "Account",
           "description": "Account email to analyze."
         },
         "max": {
-          "name": "Sample",
+          "name": "Sample size",
           "description": "How many recent emails to sample."
         }
       }
     },
-    "aceitar_categorias": {
+    "accept_categories": {
       "name": "Accept suggested categories",
       "description": "Adds the accepted suggestions to the account's categorias.yaml.",
       "fields": {
-        "conta": {
+        "account": {
           "name": "Account",
           "description": "Account email."
         },
-        "numeros": {
+        "numbers": {
           "name": "Numbers",
-          "description": "Which to accept: '1,3' or 'todas'."
+          "description": "Which to accept: '1,3' or 'all'."
         }
       }
     }

@@ -1,18 +1,18 @@
-executar:
+run_triage:
   fields:
-    conta:
+    account:
       required: false
-      example: "usuario@gmail.com"
+      example: "user@gmail.com"
       selector:
         text:
-    modo:
+    mode:
       required: false
       default: incremental
       selector:
         select:
           options:
             - incremental
-            - completo
+            - full
     max:
       required: false
       selector:
@@ -24,17 +24,17 @@ executar:
       required: false
       selector:
         boolean:
-    reprocessar:
+    reprocess:
       required: false
       default: false
       selector:
         boolean:
 
-sugerir_categorias:
+suggest_categories:
   fields:
-    conta:
+    account:
       required: true
-      example: "usuario@gmail.com"
+      example: "user@gmail.com"
       selector:
         text:
     max:
@@ -46,14 +46,14 @@ sugerir_categorias:
           max: 500
           mode: box
 
-aceitar_categorias:
+accept_categories:
   fields:
-    conta:
+    account:
       required: true
-      example: "usuario@gmail.com"
+      example: "user@gmail.com"
       selector:
         text:
-    numeros:
+    numbers:
       required: true
       example: "1,3"
       selector:

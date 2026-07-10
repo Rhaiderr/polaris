@@ -1,19 +1,21 @@
-"""Motor de triagem — o Orquestrador do Polaris adaptado à integração HA.
+"""Triage engine — the Polaris orchestrator adapted to the HA integration.
 
-Mesmo fluxo e MESMAS garantias de segurança da versão CLI:
-busca (incremental|completo) → pré-filtro → classifica → decide ação
-segundo os limiares → aplica no Gmail (label / arquiva / trash|sombra) → loga.
+Same flow and SAME safety guarantees as the standalone CLI version:
+fetch (incremental|full) → pre-filter → classify → decide action per the
+thresholds → apply on Gmail (label / archive / trash|shadow) → audit log.
 
-- limiares conservadores (Revisar<0.70, arquivar≥0.80, excluir≥0.95);
-- exclusão só p/ categoria elegível, COM List-Unsubscribe e em thread única;
-- modo sombra: em vez de trash, aplica 'Polaris/Lixeira-candidata';
-- idempotência via label 'Polaris/Processado';
-- dry_run não toca no Gmail;
-- endpoint LLM indisponível → pula a execução (sem erro).
+- conservative thresholds (Review<0.70, archive≥0.80, trash≥0.95);
+- trashing only for eligible categories, WITH List-Unsubscribe, single-message
+  threads only;
+- shadow mode: applies the 'Polaris/Lixeira-candidata' label instead of trashing;
+- idempotency via the 'Polaris/Processado' label;
+- dry_run never touches Gmail;
+- LLM endpoint down → run is skipped (no error).
 
-Diferenças para a CLI: o access token vem do Home Assistant (OAuth2Session,
-renovado por ele); config/estado/auditoria vivem em /config/polaris/<email>/;
-tudo aqui é SÍNCRONO — o runtime chama via executor.
+Differences from the CLI: the access token comes from Home Assistant
+(OAuth2Session, refreshed by HA); config/state/audit live in
+/config/polaris/<email>/; everything here is SYNCHRONOUS — the runtime calls
+it through the executor.
 """
 from __future__ import annotations
 
@@ -30,102 +32,102 @@ from .gmail_client import EmailMsg, GmailClient, HistoryExpirada
 from .llm_client import LLMClient, LLMIndisponivel
 from . import prefiltro
 
-# --- Limiares aprovados (Fase 2 §2.4) ---------------------------------------
-LIMIAR_REVISAR = 0.70   # < isto → Revisar
-LIMIAR_ARQUIVAR = 0.80  # ≥ isto e arquivar:true → remove da INBOX
-LIMIAR_EXCLUIR = 0.95   # ≥ isto (+ demais critérios) → trash/sombra
+# --- Approved thresholds ------------------------------------------------------
+LIMIAR_REVISAR = 0.70   # below this → Review
+LIMIAR_ARQUIVAR = 0.80  # at/above this and arquivar:true → remove from INBOX
+LIMIAR_EXCLUIR = 0.95   # at/above this (+ other criteria) → trash/shadow
 
-RETENCAO_LOG_DIAS = 90
+LOG_RETENTION_DAYS = 90
 
 _LOGGER = logging.getLogger(__name__)
 
-CATEGORIAS_EXEMPLO = os.path.join(os.path.dirname(__file__),
+CATEGORIES_EXAMPLE = os.path.join(os.path.dirname(__file__),
                                   "categorias.yaml.example")
 
 
 @dataclass
 class MotorConfig:
-    """Tudo que uma execução precisa (vem das opções da config entry)."""
-    conta_dir: str          # /config/polaris/<email>
+    """Everything a run needs (comes from the config entry options)."""
+    account_dir: str          # /config/polaris/<email>
     llm_base_url: str
     llm_model: str
     llm_api_key: str = ""
-    modo_sombra: bool = True
+    shadow_mode: bool = True
     dry_run: bool = False
-    reprocessar: bool = False
+    reprocess: bool = False
     max_n: int | None = None
 
 
-def preparar_conta_dir(conta_dir: str) -> None:
-    """Cria o diretório da conta e semeia um categorias.yaml inicial."""
-    os.makedirs(conta_dir, exist_ok=True)
-    cat_path = os.path.join(conta_dir, "categorias.yaml")
-    if not os.path.exists(cat_path) and os.path.exists(CATEGORIAS_EXEMPLO):
-        shutil.copy(CATEGORIAS_EXEMPLO, cat_path)
-        _LOGGER.info("categorias.yaml inicial criado em %s — edite com as "
-                     "suas labels do Gmail", cat_path)
+def prepare_account_dir(account_dir: str) -> None:
+    """Create the account directory and seed an initial categorias.yaml."""
+    os.makedirs(account_dir, exist_ok=True)
+    cat_path = os.path.join(account_dir, "categorias.yaml")
+    if not os.path.exists(cat_path) and os.path.exists(CATEGORIES_EXAMPLE):
+        shutil.copy(CATEGORIES_EXAMPLE, cat_path)
+        _LOGGER.info("Seeded initial categorias.yaml at %s — edit it with "
+                     "your own Gmail labels", cat_path)
 
 
-def construir_service(access_token: str):
-    """Monta o client do Gmail a partir do access token do HA."""
+def build_service(access_token: str):
+    """Build the Gmail API client from the HA-managed access token."""
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     creds = Credentials(token=access_token)
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
-# ------------------------------------------------------------------ decisão
+# ------------------------------------------------------------------ decision
 @dataclass
 class Plano:
-    add_labels: list[str]        # nomes de labels a adicionar (inclui Processado)
-    remove_inbox: bool           # arquivar
-    exclusao: str | None         # None | "trash" | "sombra"
-    acao: str                    # rótulo humano p/ log: revisar|label|arquivar|excluir|sombra
+    add_labels: list[str]        # label names to add (includes Processado)
+    remove_inbox: bool           # archive
+    exclusao: str | None         # None | "trash" | "shadow"
+    acao: str                    # human action tag: review|label|archive|trash|shadow
 
 
 def decidir(
     email: EmailMsg,
     cls: Classificacao,
     cat: Catalogo,
-    modo_sombra: bool,
-    contar_thread,   # callable() -> int (lazy: só chamado se for arquivar/excluir)
+    shadow_mode: bool,
+    contar_thread,   # callable() -> int (lazy: only called for archive/trash)
 ) -> Plano:
-    """Traduz a classificação em ações concretas conforme os limiares."""
+    """Translate the classification into concrete actions per the thresholds."""
     add = [cat.label_processado]
 
-    # JSON inválido OU baixa confiança → Revisar (não arquiva, não exclui).
+    # Invalid JSON OR low confidence → Review (never archives, never trashes).
     if cls.invalido or cls.confianca < LIMIAR_REVISAR:
         add.append(cat.revisar)
-        return Plano(add, remove_inbox=False, exclusao=None, acao="revisar")
+        return Plano(add, remove_inbox=False, exclusao=None, acao="review")
 
-    # Confiança suficiente → aplica a label da categoria.
+    # Confident enough → apply the category label.
     if cls.categoria != cat.label_processado:
         add.append(cls.categoria)
 
-    # Candidato a EXCLUSÃO? (tem prioridade sobre só arquivar)
+    # Trash candidate? (takes precedence over archive-only)
     quer_excluir = (
         cls.excluir
         and cat.elegivel_exclusao(cls.categoria)
         and cls.confianca >= LIMIAR_EXCLUIR
-        and email.tem_list_unsubscribe          # sinal determinístico obrigatório
+        and email.tem_list_unsubscribe          # mandatory deterministic signal
     )
-    if quer_excluir and contar_thread() == 1:   # só thread de mensagem única
-        if modo_sombra:
+    if quer_excluir and contar_thread() == 1:   # single-message threads only
+        if shadow_mode:
             add.append(cat.label_lixeira_candidata)
-            return Plano(add, remove_inbox=False, exclusao="sombra", acao="sombra")
-        return Plano(add, remove_inbox=True, exclusao="trash", acao="excluir")
+            return Plano(add, remove_inbox=False, exclusao="shadow", acao="shadow")
+        return Plano(add, remove_inbox=True, exclusao="trash", acao="trash")
 
-    # Candidato a ARQUIVAR? (categorias sensíveis podem vetar o auto-arquivamento)
+    # Archive candidate? (sensitive categories may veto auto-archiving)
     if (cls.arquivar and cls.confianca >= LIMIAR_ARQUIVAR
             and cat.elegivel_arquivamento(cls.categoria)
             and contar_thread() == 1):
-        return Plano(add, remove_inbox=True, exclusao=None, acao="arquivar")
+        return Plano(add, remove_inbox=True, exclusao=None, acao="archive")
 
-    # Caso contrário: só a label da categoria.
+    # Otherwise: category label only.
     return Plano(add, remove_inbox=False, exclusao=None, acao="label")
 
 
-# ------------------------------------------------------------------ motor
+# ------------------------------------------------------------------ engine
 class Motor:
     def __init__(self, gmail: GmailClient, llm: LLMClient, cat: Catalogo,
                  cfg: MotorConfig):
@@ -133,19 +135,19 @@ class Motor:
         self.llm = llm
         self.cat = cat
         self.cfg = cfg
-        self.state_path = os.path.join(cfg.conta_dir, "state.json")
-        self.decisoes_path = os.path.join(cfg.conta_dir, "decisoes.jsonl")
+        self.state_path = os.path.join(cfg.account_dir, "state.json")
+        self.decisions_path = os.path.join(cfg.account_dir, "decisions.jsonl")
         self._label_id_cache: dict[str, str] = {}
-        self.stats = {"vistos": 0, "processados": 0, "pulados": 0,
-                      "revisar": 0, "arquivar": 0, "excluir": 0,
-                      "sombra": 0, "label": 0}
+        self.stats = {"seen": 0, "processed": 0, "skipped": 0,
+                      "review": 0, "archive": 0, "trash": 0,
+                      "shadow": 0, "label": 0}
 
-    # ---- estado (leitura/gravação atômica) ----
+    # ---- state (atomic read/write) ----
     def _load_state(self) -> dict:
         if os.path.exists(self.state_path):
             with open(self.state_path, encoding="utf-8") as f:
                 return json.load(f)
-        return {"historyId": None, "ultima_execucao": None}
+        return {"historyId": None, "last_run": None}
 
     def _save_state(self, state: dict) -> None:
         if self.cfg.dry_run:
@@ -156,28 +158,28 @@ class Motor:
             json.dump(state, f, ensure_ascii=False, indent=2)
         os.replace(tmp, self.state_path)
 
-    # ---- label name -> id (cria se preciso) ----
+    # ---- label name -> id (created on demand) ----
     def _label_id(self, nome: str) -> str:
         if nome not in self._label_id_cache:
             self._label_id_cache[nome] = self.gmail.garantir_label(nome)
         return self._label_id_cache[nome]
 
-    # ---- loop principal de mensagens ----
+    # ---- main message loop ----
     def _processar(self, pares: list[dict]) -> None:
         processado_id = (None if self.cfg.dry_run
                          else self._label_id(self.cat.label_processado))
         for par in pares:
-            if self.cfg.max_n and self.stats["processados"] >= self.cfg.max_n:
-                _LOGGER.info("Limite de %s mensagens atingido; parando.",
+            if self.cfg.max_n and self.stats["processed"] >= self.cfg.max_n:
+                _LOGGER.info("Limit of %s messages reached; stopping.",
                              self.cfg.max_n)
                 break
-            self.stats["vistos"] += 1
+            self.stats["seen"] += 1
             email = self.gmail.get_email(par["id"])
 
-            # idempotência: pula quem já tem Polaris/Processado
-            if (not self.cfg.reprocessar and processado_id
+            # idempotency: skip anything already labeled Polaris/Processado
+            if (not self.cfg.reprocess and processado_id
                     and processado_id in email.label_ids):
-                self.stats["pulados"] += 1
+                self.stats["skipped"] += 1
                 continue
 
             pf = prefiltro.aplicar(email)
@@ -189,11 +191,11 @@ class Motor:
 
             contador = _memo(
                 lambda: self.gmail.contar_mensagens_thread(email.thread_id))
-            plano = decidir(email, cls, self.cat, self.cfg.modo_sombra, contador)
+            plano = decidir(email, cls, self.cat, self.cfg.shadow_mode, contador)
 
             self._aplicar(email, plano)
             self._logar(email, cls, plano)
-            self.stats["processados"] += 1
+            self.stats["processed"] += 1
             self.stats[plano.acao] = self.stats.get(plano.acao, 0) + 1
 
     def _aplicar(self, email: EmailMsg, plano: Plano) -> None:
@@ -202,7 +204,7 @@ class Motor:
         add_ids = [self._label_id(n) for n in plano.add_labels]
         remove_ids = ["INBOX"] if plano.remove_inbox else []
         if plano.exclusao == "trash":
-            # aplica labels primeiro (rastro), depois manda p/ Lixeira
+            # apply labels first (audit trail), then send to Trash
             self.gmail.modificar(email.id, add=add_ids, remove=remove_ids)
             self.gmail.trash(email.id)
         else:
@@ -213,76 +215,77 @@ class Motor:
             "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
             "id": email.id,
             "thread": email.thread_id,
-            "remetente": email.remetente,
-            "assunto": email.assunto,
-            "categoria": cls.categoria,
-            "confianca": cls.confianca,
-            "arquivar": cls.arquivar,
-            "excluir": cls.excluir,
-            "motivo": cls.motivo,
-            "acao": plano.acao,
+            "sender": email.remetente,
+            "subject": email.assunto,
+            "category": cls.categoria,
+            "confidence": cls.confianca,
+            "archive": cls.arquivar,
+            "trash": cls.excluir,
+            "reason": cls.motivo,
+            "action": plano.acao,
             "dry_run": self.cfg.dry_run,
         }
         if self.cfg.dry_run:
-            _LOGGER.info("[DRY] %s → %s [cat=%s conf=%.2f excluir=%s unsub=%s] %s",
-                         (email.assunto or "(sem assunto)")[:50], plano.acao,
+            _LOGGER.info("[DRY] %s → %s [cat=%s conf=%.2f trash=%s unsub=%s] %s",
+                         (email.assunto or "(no subject)")[:50], plano.acao,
                          cls.categoria, cls.confianca, cls.excluir,
                          email.tem_list_unsubscribe, cls.motivo)
         else:
-            os.makedirs(os.path.dirname(self.decisoes_path), exist_ok=True)
-            with open(self.decisoes_path, "a", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(self.decisions_path), exist_ok=True)
+            with open(self.decisions_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
-    # ---- modos ----
+    # ---- modes ----
     def incremental(self) -> None:
         state = self._load_state()
         if not state.get("historyId"):
-            # Bootstrap: fixa o cursor atual; backlog fica para o modo completo.
+            # Bootstrap: pin the current cursor; the backlog is handled by
+            # the 'full' mode.
             prof = self.gmail.get_profile()
             state["historyId"] = prof["historyId"]
-            state["ultima_execucao"] = _agora_iso()
+            state["last_run"] = _now_iso()
             self._save_state(state)
-            _LOGGER.info("Bootstrap: cursor historyId fixado (%s). Nada a "
-                         "processar. Rode o serviço com modo 'completo' para "
-                         "o backlog.", prof["historyId"])
+            _LOGGER.info("Bootstrap: historyId cursor pinned (%s). Nothing to "
+                         "process. Call the service with mode 'full' for the "
+                         "backlog.", prof["historyId"])
             self.stats["bootstrap"] = True
             return
         try:
             pares, novo_hid = self.gmail.history_added(state["historyId"])
-            _LOGGER.info("Incremental: %d mensagem(ns) nova(s) desde o último "
+            _LOGGER.info("Incremental: %d new message(s) since the last "
                          "cursor.", len(pares))
         except HistoryExpirada:
-            # Cursor velho demais: fallback por data + recontar o cursor.
-            depois = _after_query(state.get("ultima_execucao"))
-            _LOGGER.warning("historyId expirado; fallback messages.list %s",
-                            depois)
+            # Cursor too old: date-based fallback + re-pin the cursor.
+            depois = _after_query(state.get("last_run"))
+            _LOGGER.warning("historyId expired; falling back to messages.list "
+                            "%s", depois)
             pares = self.gmail.messages_list(depois)
             novo_hid = self.gmail.get_profile()["historyId"]
         self._processar(pares)
         state["historyId"] = novo_hid or state["historyId"]
-        state["ultima_execucao"] = _agora_iso()
+        state["last_run"] = _now_iso()
         self._save_state(state)
 
-    def completo(self) -> None:
+    def full(self) -> None:
         query = "-in:chats"
-        if not self.cfg.reprocessar:
+        if not self.cfg.reprocess:
             query += f' -label:"{self.cat.label_processado}"'
         pares = self.gmail.messages_list(query, max_results=self.cfg.max_n)
-        _LOGGER.info("Completo: %d mensagem(ns) candidata(s) (query: %s).",
+        _LOGGER.info("Full: %d candidate message(s) (query: %s).",
                      len(pares), query)
         self._processar(pares)
         state = self._load_state()
         state["historyId"] = self.gmail.get_profile()["historyId"]
-        state["ultima_execucao"] = _agora_iso()
+        state["last_run"] = _now_iso()
         self._save_state(state)
 
-    def prune_logs(self, retencao_dias: int = RETENCAO_LOG_DIAS) -> None:
-        """Remove entradas do decisoes.jsonl mais antigas que a retenção."""
-        if not os.path.exists(self.decisoes_path):
+    def prune_logs(self, retention_days: int = LOG_RETENTION_DAYS) -> None:
+        """Drop decisions.jsonl entries older than the retention window."""
+        if not os.path.exists(self.decisions_path):
             return
-        limite = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retencao_dias)
+        limite = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retention_days)
         manter = []
-        with open(self.decisoes_path, encoding="utf-8") as f:
+        with open(self.decisions_path, encoding="utf-8") as f:
             for linha in f:
                 linha = linha.strip()
                 if not linha:
@@ -292,97 +295,97 @@ class Motor:
                     if ts >= limite:
                         manter.append(linha)
                 except (json.JSONDecodeError, KeyError, ValueError):
-                    manter.append(linha)  # não descarta o que não sei datar
-        tmp = self.decisoes_path + ".tmp"
+                    manter.append(linha)  # keep whatever we cannot date
+        tmp = self.decisions_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write("\n".join(manter) + ("\n" if manter else ""))
-        os.replace(tmp, self.decisoes_path)
+        os.replace(tmp, self.decisions_path)
 
 
-# ---------------------------------------------------------------- entradas
-def executar(access_token: str, cfg: MotorConfig, modo: str) -> dict:
-    """Uma execução completa de triagem (chamada via executor). Retorna stats.
+# ---------------------------------------------------------------- entry points
+def executar(access_token: str, cfg: MotorConfig, mode: str) -> dict:
+    """One full triage run (called through the executor). Returns stats.
 
-    Nunca levanta por LLM fora do ar: sinaliza em stats["pulado"] /
-    stats["interrompido"] — semântica idêntica à CLI (incremental recupera).
+    Never raises on LLM downtime: signals it via stats["skipped_reason"] /
+    stats["interrupted"] — same semantics as the CLI (incremental catches up).
     """
-    gmail = GmailClient(construir_service(access_token))
+    gmail = GmailClient(build_service(access_token))
     llm = LLMClient(base_url=cfg.llm_base_url, model=cfg.llm_model,
                     api_key=cfg.llm_api_key)
     if not llm.disponivel():
-        _LOGGER.warning("Endpoint LLM indisponível (%s). Pulando esta execução.",
+        _LOGGER.warning("LLM endpoint unavailable (%s). Skipping this run.",
                         llm.base_url)
-        return {"pulado": "llm_indisponivel"}
+        return {"skipped_reason": "llm_unavailable"}
 
-    cat = carregar_catalogo(os.path.join(cfg.conta_dir, "categorias.yaml"))
+    cat = carregar_catalogo(os.path.join(cfg.account_dir, "categorias.yaml"))
     motor = Motor(gmail, llm, cat, cfg)
     if not cfg.dry_run:
         motor.prune_logs()
     try:
-        if modo == "completo":
-            motor.completo()
+        if mode == "full":
+            motor.full()
         else:
             motor.incremental()
     except LLMIndisponivel as e:
-        _LOGGER.warning("LLM caiu no meio (%s). O incremental recupera na "
-                        "próxima rodada.", e)
-        motor.stats["interrompido"] = "llm_indisponivel"
-    motor.stats["ultima_execucao"] = _agora_iso()
+        _LOGGER.warning("LLM went down mid-run (%s). The next incremental "
+                        "run catches up.", e)
+        motor.stats["interrupted"] = "llm_unavailable"
+    motor.stats["last_run"] = _now_iso()
     return motor.stats
 
 
 def rodar_sugestor(access_token: str, cfg: MotorConfig, max_n: int) -> list[dict]:
-    """Varre a caixa e retorna sugestões de categorias (salvas no conta_dir)."""
+    """Sample the mailbox and return category suggestions (saved in account_dir)."""
     from . import sugestor
 
-    gmail = GmailClient(construir_service(access_token))
+    gmail = GmailClient(build_service(access_token))
     llm = LLMClient(base_url=cfg.llm_base_url, model=cfg.llm_model,
                     api_key=cfg.llm_api_key)
     if not llm.disponivel():
-        raise LLMIndisponivel(f"endpoint fora do ar: {llm.base_url}")
-    cat = carregar_catalogo(os.path.join(cfg.conta_dir, "categorias.yaml"))
+        raise LLMIndisponivel(f"endpoint unavailable: {llm.base_url}")
+    cat = carregar_catalogo(os.path.join(cfg.account_dir, "categorias.yaml"))
     metas = sugestor.amostrar(gmail, max_n)
     sugestoes = sugestor.sugerir(metas, cat, llm, log=_LOGGER)
-    sugestor.salvar_json(cfg.conta_dir, sugestoes)
+    sugestor.salvar_json(cfg.account_dir, sugestoes)
     return sugestoes
 
 
-def aceitar_sugestoes(conta_dir: str, numeros: str) -> list[str]:
-    """Aplica sugestões salvas ('1,3' ou 'todas'). Retorna nomes adicionados."""
+def aceitar_sugestoes(account_dir: str, numbers: str) -> list[str]:
+    """Apply saved suggestions ('1,3' or 'all'). Returns the added names."""
     from . import sugestor
 
-    sugestoes = sugestor.carregar_json(conta_dir)
-    if numeros.strip().lower() in ("todas", "todos", "all"):
+    sugestoes = sugestor.carregar_json(account_dir)
+    if numbers.strip().lower() in ("all", "todas", "todos"):
         aceitas = sugestoes
     else:
-        idx = [int(t) for t in numeros.split(",") if t.strip().isdigit()]
+        idx = [int(t) for t in numbers.split(",") if t.strip().isdigit()]
         aceitas = [sugestoes[i - 1] for i in idx if 1 <= i <= len(sugestoes)]
     if aceitas:
         sugestor.aplicar_aceites(
-            os.path.join(conta_dir, "categorias.yaml"), aceitas)
+            os.path.join(account_dir, "categorias.yaml"), aceitas)
     return [a["nome"] for a in aceitas]
 
 
-# ------------------------------------------------------------------ util
-def _agora_iso() -> str:
+# ------------------------------------------------------------------ helpers
+def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def _after_query(ultima_execucao: str | None) -> str:
-    """Query messages.list a partir da última execução (com 1 dia de folga)."""
-    if ultima_execucao:
+def _after_query(last_run: str | None) -> str:
+    """messages.list query starting at the last run (with 1 day of slack)."""
+    if last_run:
         try:
-            base = dt.datetime.fromisoformat(ultima_execucao)
+            base = dt.datetime.fromisoformat(last_run)
         except ValueError:
             base = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
     else:
         base = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
-    base -= dt.timedelta(days=1)  # folga para não perder mensagens na fronteira
+    base -= dt.timedelta(days=1)  # slack so boundary messages are not missed
     return f"after:{base.strftime('%Y/%m/%d')} -in:chats"
 
 
 def _memo(fn):
-    """Memoiza um callable de zero args (avalia no máximo 1x)."""
+    """Memoize a zero-arg callable (evaluated at most once)."""
     cache = {}
 
     def wrapped():

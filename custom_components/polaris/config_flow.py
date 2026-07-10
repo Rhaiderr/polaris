@@ -1,10 +1,10 @@
-"""Config flow do Polaris — OAuth nativo do HA ("Entrar com Google").
+"""Polaris config flow — HA-native OAuth ("Sign in with Google").
 
-O fluxo é o padrão das integrações Google oficiais: o usuário registra a
-credencial (client_id/secret de um app OAuth tipo *Web*) uma única vez em
-Application Credentials, e cada conta Gmail vira uma config entry ("Adicionar
-integração → Polaris → aprovar no Google → pronto"). O HA guarda o token e
-renova sozinho. Multi-conta = adicionar a integração de novo.
+Same pattern as the official Google integrations: the user registers the
+credential (client_id/secret of a *Web*-type OAuth app) once in Application
+Credentials, and each Gmail account becomes a config entry ("Add integration
+→ Polaris → approve on Google → done"). HA stores the token and refreshes it
+by itself. Multi-account = add the integration again.
 """
 from __future__ import annotations
 
@@ -18,16 +18,16 @@ from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow, selector
 
 from .const import (
-    CONF_AGENDAMENTO,
     CONF_DRY_RUN,
-    CONF_HORA,
     CONF_LLM_API_KEY,
     CONF_LLM_BASE_URL,
     CONF_LLM_MODEL,
-    CONF_MAX,
-    CONF_MODO_SOMBRA,
-    DEFAULT_HORA,
-    DEFAULT_MAX,
+    CONF_MAX_PER_RUN,
+    CONF_SCHEDULE_ENABLED,
+    CONF_SCHEDULE_TIME,
+    CONF_SHADOW_MODE,
+    DEFAULT_MAX_PER_RUN,
+    DEFAULT_SCHEDULE_TIME,
     DOMAIN,
     SCOPE_GMAIL,
 )
@@ -38,7 +38,7 @@ _LOGGER = logging.getLogger(__name__)
 class PolarisFlowHandler(
     config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN
 ):
-    """OAuth via my.home-assistant.io — sem tela de erro, sem colar URL."""
+    """OAuth via my.home-assistant.io — no error page, no URL pasting."""
 
     DOMAIN = DOMAIN
     VERSION = 1
@@ -49,7 +49,7 @@ class PolarisFlowHandler(
 
     @property
     def extra_authorize_data(self) -> dict[str, Any]:
-        # offline + consent garantem o refresh_token (login que não expira).
+        # offline + consent guarantee a refresh_token (login never expires).
         return {
             "scope": SCOPE_GMAIL,
             "access_type": "offline",
@@ -71,9 +71,9 @@ class PolarisFlowHandler(
     async def async_oauth_create_entry(
         self, data: dict[str, Any]
     ) -> config_entries.ConfigFlowResult:
-        """Token obtido — descobre o email (vira o nome/unique_id da entry)."""
+        """Token obtained — resolve the email (entry title/unique_id)."""
 
-        def _perfil() -> dict:
+        def _profile() -> dict:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
 
@@ -82,12 +82,12 @@ class PolarisFlowHandler(
             return service.users().getProfile(userId="me").execute()
 
         try:
-            perfil = await self.hass.async_add_executor_job(_perfil)
-        except Exception:  # noqa: BLE001 — qualquer falha aqui = não conectou
-            _LOGGER.exception("Falha ao consultar o perfil do Gmail")
+            profile = await self.hass.async_add_executor_job(_profile)
+        except Exception:  # noqa: BLE001 — any failure here = cannot connect
+            _LOGGER.exception("Failed to query the Gmail profile")
             return self.async_abort(reason="cannot_connect")
 
-        email = perfil["emailAddress"]
+        email = profile["emailAddress"]
         await self.async_set_unique_id(email)
 
         if self.source == config_entries.SOURCE_REAUTH:
@@ -111,7 +111,7 @@ class PolarisFlowHandler(
 
 
 class PolarisOptionsFlow(config_entries.OptionsFlow):
-    """Opções por conta: endpoint do LLM, agendamento e comportamento."""
+    """Per-account options: LLM endpoint, schedule and behavior."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -136,20 +136,23 @@ class PolarisOptionsFlow(config_entries.OptionsFlow):
                     )
                 ),
                 vol.Required(
-                    CONF_AGENDAMENTO, default=o.get(CONF_AGENDAMENTO, False)
+                    CONF_SCHEDULE_ENABLED,
+                    default=o.get(CONF_SCHEDULE_ENABLED, False)
                 ): selector.BooleanSelector(),
                 vol.Required(
-                    CONF_HORA, default=o.get(CONF_HORA, DEFAULT_HORA)
+                    CONF_SCHEDULE_TIME,
+                    default=o.get(CONF_SCHEDULE_TIME, DEFAULT_SCHEDULE_TIME)
                 ): selector.TimeSelector(),
                 vol.Required(
-                    CONF_MAX, default=o.get(CONF_MAX, DEFAULT_MAX)
+                    CONF_MAX_PER_RUN,
+                    default=o.get(CONF_MAX_PER_RUN, DEFAULT_MAX_PER_RUN)
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=1, max=500, mode=selector.NumberSelectorMode.BOX
                     )
                 ),
                 vol.Required(
-                    CONF_MODO_SOMBRA, default=o.get(CONF_MODO_SOMBRA, True)
+                    CONF_SHADOW_MODE, default=o.get(CONF_SHADOW_MODE, True)
                 ): selector.BooleanSelector(),
                 vol.Required(
                     CONF_DRY_RUN, default=o.get(CONF_DRY_RUN, False)

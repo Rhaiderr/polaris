@@ -1,27 +1,28 @@
 # ============================================================================
-# Polaris — categorias de classificação (EXEMPLO GENÉRICO — versionado)
-#   cp config/categorias.yaml.example config/categorias.yaml
-# e ajuste as categorias para as SUAS labels do Gmail. O arquivo real
-# (config/categorias.yaml) é gitignored (nomes de labels são dado pessoal).
+# Polaris — classification categories (GENERIC EXAMPLE)
+# This file is seeded to /config/polaris/<email>/categorias.yaml when an
+# account is linked. Edit it with YOUR OWN Gmail labels (plain text file).
 #
-# O classificador monta a lista de categorias dinamicamente daqui — trocar
-# categorias NÃO exige mexer em Python. 'descricao' orienta o modelo.
+# The classifier builds the category list dynamically from here — changing
+# categories requires NO code changes. 'descricao' guides the model.
+# NOTE: the sample data below is in Portuguese because the LLM prompt
+# currently is too (see classificador.py). Categories in any language work.
 # ============================================================================
 
-# Labels internas do Polaris (não são categorias de classificação).
-# O Polaris cria essas labels no Gmail se não existirem.
+# Internal Polaris labels (not classification categories).
+# Polaris creates these labels in Gmail if they do not exist.
 labels_internas:
-  processado: "Polaris/Processado"          # marcador de idempotência
-  lixeira_candidata: "Polaris/Lixeira-candidata"  # modo sombra de exclusão
+  processado: "Polaris/Processado"          # idempotency marker
+  lixeira_candidata: "Polaris/Lixeira-candidata"  # shadow mode for trashing
 
-# Categoria de fallback quando o JSON é inválido ou a confiança é baixa.
-# DEVE existir e NUNCA permite exclusão/arquivamento automático.
+# Fallback category when the JSON is invalid or confidence is low.
+# MUST exist and NEVER allows automatic trashing/archiving.
 categoria_revisar: "Revisar"
 
 categorias:
   - nome: "Promoções"
     descricao: "Newsletters, marketing, ofertas, cupons, propaganda. Email de massa/promocional."
-    permitir_exclusao: true      # única categoria elegível a exclusão (ajuste a seu gosto)
+    permitir_exclusao: true      # the only category eligible for trashing (adjust to taste)
 
   - nome: "Recibos"
     descricao: "Comprovantes, notas fiscais, faturas pagas, confirmações de pagamento."
@@ -30,9 +31,9 @@ categorias:
   - nome: "Segurança"
     descricao: "Códigos OTP, alertas de login, avisos de segurança. SENSÍVEL — nunca excluir."
     permitir_exclusao: false
-    arquivar_permitido: false     # (opcional, default true) nunca sai da inbox automaticamente; só recebe label
+    arquivar_permitido: false     # (optional, default true) never auto-leaves the inbox; label only
 
-  # Exemplos de categorias pessoais — troque pelas suas labels reais:
+  # Examples of personal categories — replace with your real labels:
   - nome: "Trabalho"
     descricao: "Assuntos profissionais, colegas, projetos do trabalho."
     permitir_exclusao: false

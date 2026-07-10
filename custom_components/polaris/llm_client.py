@@ -1,13 +1,13 @@
-"""Cliente LLM — qualquer endpoint OpenAI-compatible (/v1/chat/completions).
+"""LLM client — any OpenAI-compatible endpoint (/v1/chat/completions).
 
-Genérico por design: funciona com LM Studio, Ollama, llama.cpp, vLLM,
-OpenRouter, OpenAI, etc. Na integração HA, base_url/model/api_key vêm das
-OPÇÕES da config entry (não de env vars).
+Generic by design: works with LM Studio, Ollama, llama.cpp, vLLM,
+OpenRouter, OpenAI, etc. In the HA integration, base_url/model/api_key come
+from the config entry OPTIONS (not env vars).
 
-Sem tool-calling (o contrato é JSON no texto — ver classificador), porque
-tool-calling é justamente o que falha em vários modelos locais.
+No tool-calling (the contract is JSON-in-text — see classificador), because
+tool-calling is exactly what breaks on many local models.
 
-Chamadas são bloqueantes (requests) — o runtime roda tudo em executor.
+Calls are blocking (requests) — the runtime dispatches through the executor.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import requests
 
 
 class LLMIndisponivel(Exception):
-    """O endpoint não respondeu. O runtime trata como 'pular execução'."""
+    """The endpoint did not respond. The runtime treats it as 'skip the run'."""
 
 
 class LLMClient:
@@ -35,11 +35,11 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.timeout = timeout
         if not self.base_url or not self.model:
-            raise ValueError("Endpoint e modelo do LLM são obrigatórios "
-                             "(configure nas opções da integração).")
+            raise ValueError("The LLM endpoint and model are required "
+                             "(set them in the integration options).")
 
     def disponivel(self) -> bool:
-        """Ping barato: lista modelos. False se o endpoint não está de pé."""
+        """Cheap ping: lists models. False when the endpoint is down."""
         try:
             r = requests.get(f"{self.base_url}/models", headers=self._headers(), timeout=5)
             return r.status_code == 200
@@ -53,10 +53,10 @@ class LLMClient:
         return h
 
     def chat(self, system: str, user: str) -> str:
-        """Uma rodada system+user. Retorna o texto da resposta (bruto).
+        """One system+user round. Returns the raw response text.
 
-        Levanta LLMIndisponivel em erro de conexão/timeout — o runtime
-        decide pular a execução (o incremental recupera na próxima rodada).
+        Raises LLMIndisponivel on connection errors/timeouts — the runtime
+        skips the run (the incremental mode catches up next time).
         """
         payload = {
             "model": self.model,

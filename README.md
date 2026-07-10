@@ -1,297 +1,310 @@
 # Polaris
 
-Triagem automática de Gmail com um LLM **local** (ou qualquer endpoint
-OpenAI-compatible). O Polaris sincroniza sua caixa de entrada, classifica cada
-email em categorias que **você** define, aplica labels, arquiva o que já foi
-resolvido e — em modo sombra — marca o lixo promocional como candidato à
-Lixeira, para você auditar antes de excluir de verdade.
+> 🇧🇷 [Versão em português](README.pt-BR.md)
 
-Projetado para rodar barato: o trabalho pesado (classificação) vai para um
-modelo que você já tem em casa, sem custo de API. É um container **run-once**,
-agendado por um timer do host.
+Automatic Gmail triage with a **local** LLM (or any OpenAI-compatible
+endpoint). Polaris syncs your inbox, classifies each email into categories
+**you** define, applies labels, archives what is already resolved and — in
+shadow mode — flags disposable promo email as a Trash candidate, so you can
+audit before anything is actually trashed.
 
-> ⚠️ **Projeto pessoal, sem garantias.** Ele lê e modifica a sua conta Gmail
-> (labels, arquivamento, Lixeira). Rode sempre em `--dry-run` primeiro e
-> mantenha o **modo sombra** ligado por semanas antes de confiar na exclusão.
-> Nunca faz exclusão permanente — tudo vai para a Lixeira (recuperável ~30 dias).
+Designed to run cheap: the heavy lifting (classification) goes to a model you
+already run at home, with zero API cost. Available as a **native Home
+Assistant integration** (via HACS) or as a standalone run-once container.
+
+> ⚠️ **Personal project, no warranties.** It reads and modifies your Gmail
+> account (labels, archiving, Trash). Always start with a dry run and keep
+> **shadow mode** on for weeks before trusting automatic trashing.
+> It never deletes permanently — everything goes to the Trash
+> (recoverable for ~30 days).
 
 ---
 
-## Como funciona
+## How it works
 
 ```mermaid
 flowchart LR
-    A[Gmail<br/>History API] -->|novas msgs| B[Pré-filtro]
-    B --> C[Classificador<br/>LLM local]
-    C -->|JSON: categoria,<br/>arquivar, excluir,<br/>confiança| D[Decisão<br/>+ guardrails]
-    D -->|label| E[Aplica label]
-    D -->|arquivar| F[Remove da Inbox]
-    D -->|sombra| G[Label<br/>Lixeira-candidata]
-    D -->|excluir| H[Trash]
-    D -->|baixa conf.| I[Revisar]
+    A[Gmail<br/>History API] -->|new msgs| B[Pre-filter]
+    B --> C[Classifier<br/>local LLM]
+    C -->|JSON: category,<br/>archive, trash,<br/>confidence| D[Decision<br/>+ guardrails]
+    D -->|label| E[Apply label]
+    D -->|archive| F[Remove from Inbox]
+    D -->|shadow| G[Trash-candidate<br/>label]
+    D -->|trash| H[Trash]
+    D -->|low conf.| I[Review]
 ```
 
-O escopo OAuth é **`gmail.modify`** apenas: ler, aplicar labels, arquivar e
-mandar para a Lixeira. **Nunca** envia email nem apaga permanentemente.
+The OAuth scope is **`gmail.modify`** only: read, apply labels, archive and
+send to Trash. It **never** sends email and **never** deletes permanently.
 
-### Decisão (limiares + guardrails)
+### Decision (thresholds + guardrails)
 
-A ação vem da classificação do modelo, mas **filtrada por regras
-determinísticas** — o modelo nunca decide sozinho excluir algo:
+The action comes from the model's classification, but **filtered by
+deterministic rules** — the model never gets to trash anything on its own:
 
-| Ação | Condições |
-|------|-----------|
-| **Revisar** | confiança `< 0.70`, ou JSON inválido → só recebe label `Revisar`, nada é mexido |
-| **Label** | confiança `≥ 0.70` → aplica a label da categoria |
-| **Arquivar** | `arquivar=true` + conf `≥ 0.80` + thread de mensagem única + categoria **não** protegida (`arquivar_permitido`) |
-| **Sombra / Excluir** | `excluir=true` + conf `≥ 0.95` + categoria **elegível** (`permitir_exclusao`) + **`List-Unsubscribe` presente** + thread única |
+| Action | Conditions |
+|--------|------------|
+| **Review** | confidence `< 0.70`, or invalid JSON → only gets the `Revisar` label, nothing else is touched |
+| **Label** | confidence `≥ 0.70` → applies the category label |
+| **Archive** | `arquivar=true` + conf `≥ 0.80` + single-message thread + category **not** protected (`arquivar_permitido`) |
+| **Shadow / Trash** | `excluir=true` + conf `≥ 0.95` + **eligible** category (`permitir_exclusao`) + **`List-Unsubscribe` present** + single-message thread |
 
-- **Exclusão sempre começa em modo sombra**: em vez de mandar para a Lixeira,
-  aplica a label `Polaris/Lixeira-candidata`. Você audita e só então desliga o
-  modo sombra (`MODO_SOMBRA_EXCLUSAO=false`).
-- Só categorias com `permitir_exclusao: true` (ex.: `Promoções`) chegam perto da
-  exclusão. Categorias sensíveis (ex.: `Segurança`) podem ter
-  `arquivar_permitido: false` para **nunca** sair da inbox automaticamente.
-- Idempotência: cada email processado recebe `Polaris/Processado`; execuções
-  seguintes o pulam.
+- **Trashing always starts in shadow mode**: instead of sending to Trash, it
+  applies the `Polaris/Lixeira-candidata` label. You audit, and only then turn
+  shadow mode off.
+- Only categories with `permitir_exclusao: true` (e.g. promos) ever get close
+  to trashing. Sensitive categories (e.g. security) can set
+  `arquivar_permitido: false` so they **never** leave the inbox automatically.
+- Idempotency: every processed email gets `Polaris/Processado`; later runs
+  skip it.
 
 ---
 
-## Pré-requisitos
+## Home Assistant (recommended): native integration via HACS
 
-- **Python 3.12+** (com `venv`/`pip`) para o 1º login OAuth fora do container.
-- **Docker + Docker Compose** para rodar a triagem.
-- Um **endpoint LLM OpenAI-compatible** acessível (veja abaixo).
-- Uma conta **Google Cloud** para gerar as credenciais OAuth (grátis).
+Polaris runs as a **Home Assistant integration** — native Google sign-in
+(no terminal, no URL pasting), multiple accounts, scheduling and services:
 
-### Funciona com qualquer endpoint OpenAI-compatible
+1. **HACS → Custom repositories** → add
+   `https://github.com/Rhaiderr/polaris` (category *Integration*) → install
+   **Polaris** and restart HA.
+2. Create the OAuth credential (**Web-type app**, once):
+   [docs/gmail-credentials.md](docs/gmail-credentials.md).
+3. **Settings → Devices & services → Add integration → Polaris**
+   → paste the credential (first time only) → **Sign in with Google** → done.
+   Another account? Add the integration again.
+4. In the integration **options**: model endpoint, daily schedule, shadow mode.
+5. Categories live in `/config/polaris/<email>/categorias.yaml` (seeded with
+   an example). Services: `polaris.run_triage` (triage; mode `full` for the
+   backlog), `polaris.suggest_categories` / `polaris.accept_categories`
+   (AI suggestions), a last-run sensor and the `polaris_run_completed` event
+   for automations (e.g. wake your model machine before the scheduled run).
 
-O Polaris nunca menciona um provedor específico — tudo vem de variáveis de
-ambiente. Serve LM Studio, Ollama, llama.cpp, vLLM, OpenRouter, OpenAI, etc.:
+The rest of this README covers the **standalone** usage (CLI/Docker/systemd),
+which remains fully supported.
+
+> Note: the LLM prompts are currently written in Portuguese (the language the
+> reference deployment was tuned with). Classification works with categories
+> in any language; a configurable prompt language is on the roadmap.
+
+---
+
+## Standalone prerequisites
+
+- **Python 3.12+** (with `venv`/`pip`) for the first OAuth login outside the
+  container.
+- **Docker + Docker Compose** to run the triage.
+- A reachable **OpenAI-compatible LLM endpoint** (see below).
+- A **Google Cloud** account to create the OAuth credentials (free).
+
+### Works with any OpenAI-compatible endpoint
+
+Polaris never hardcodes a provider — everything comes from environment
+variables. LM Studio, Ollama, llama.cpp, vLLM, OpenRouter, OpenAI, etc.:
 
 ```bash
-# Modelo em OUTRA máquina da LAN:
+# Model on ANOTHER machine on the LAN:
 LLM_BASE_URL=http://192.168.0.50:1234/v1
-# Mesma máquina do container (o compose já mapeia host.docker.internal):
+# Same machine as the container (compose already maps host.docker.internal):
 LLM_BASE_URL=http://host.docker.internal:1234/v1
-# Fora do Docker, modelo no mesmo host:
+# Outside Docker, model on the same host:
 LLM_BASE_URL=http://localhost:1234/v1
 ```
 
-Se o endpoint estiver fora do ar, o Polaris **pula a execução** (exit 0) — o
-modo incremental recupera na próxima rodada. Nada quebra.
+If the endpoint is down, Polaris **skips the run** (exit 0) — the incremental
+mode catches up next time. Nothing breaks.
 
 ---
 
-## Home Assistant (recomendado): integração nativa via HACS
-
-O Polaris roda como **integração do Home Assistant** — login com Google nativo
-(sem terminal, sem colar URL), múltiplas contas, agendamento e serviços:
-
-1. **HACS → Repositórios personalizados** → adicione
-   `https://github.com/Rhaiderr/polaris` (categoria *Integration*) → instale
-   **Polaris** e reinicie o HA.
-2. Crie a credencial OAuth (**app tipo Web**, uma vez):
-   [docs/gerar-credenciais-gmail.md](docs/gerar-credenciais-gmail.md).
-3. **Configurações → Dispositivos e serviços → Adicionar integração → Polaris**
-   → cole a credencial (1ª vez) → **Entrar com Google** → pronto. Outra conta?
-   Adicione a integração de novo.
-4. Nas **opções** da integração: endpoint do modelo, horário diário, modo sombra.
-5. Categorias em `/config/polaris/<email>/categorias.yaml` (criado com um
-   exemplo). Serviços: `polaris.executar` (triagem; modo `completo` p/ backlog),
-   `polaris.sugerir_categorias` / `polaris.aceitar_categorias` (sugestões por IA),
-   sensor de última execução e evento `polaris_execucao` para automações.
-
-O restante deste README cobre o uso **standalone** (CLI/Docker/systemd), que
-continua 100% suportado.
-
----
-
-## Quickstart (~10 min)
+## Quickstart (standalone, ~10 min)
 
 ```bash
-# 1. Clonar e instalar
+# 1. Clone and install
 git clone https://github.com/Rhaiderr/polaris.git && cd polaris
 python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 
-# 2. Configurar o endpoint do modelo
+# 2. Configure the model endpoint
 cp .env.example .env
-$EDITOR .env            # ajuste LLM_BASE_URL e LLM_MODEL
+$EDITOR .env            # set LLM_BASE_URL and LLM_MODEL
 
-# 3. Credenciais OAuth (uma vez) — veja docs/gerar-credenciais-gmail.md
-#    Baixe o credentials.json (OAuth Desktop) para config/credentials.json
+# 3. OAuth credentials (once) — see docs/gmail-credentials.md
+#    Download credentials.json (Desktop OAuth) to config/credentials.json
 
-# 4. Adicionar sua conta (login + categorias iniciais em UM comando)
-python -m src.orquestrador --login              # cria a conta 'principal'
-$EDITOR config/principal/categorias.yaml        # ajuste com as SUAS labels do Gmail
+# 4. Add your account (login + initial categories in ONE command)
+python -m src.orquestrador --login              # creates the 'principal' account
+$EDITOR config/principal/categorias.yaml        # adjust to YOUR Gmail labels
 
-# 5. Ver a triagem SEM aplicar nada
+# 5. See the triage WITHOUT applying anything
 python -m src.orquestrador --dry-run --modo completo --max 30
 ```
 
-Confira as linhas `[DRY]` — cada uma mostra a categoria, a confiança e a ação
-que o Polaris *tomaria*. Nada é aplicado em `--dry-run`.
+Check the `[DRY]` lines — each one shows the category, the confidence and the
+action Polaris *would* take. Nothing is applied in `--dry-run`.
 
-O `--login` faz tudo de uma vez: cria `config/principal/`, gera o token, semeia
-um `categorias.yaml` inicial e mostra o próximo passo.
+`--login` does everything at once: creates `config/principal/`, generates the
+token, seeds an initial `categorias.yaml` and prints the next step.
 
-> **Login OAuth em máquina headless / via SSH:** o `--login` sobe um servidor
-> local na porta `OAUTH_PORT` (default 8765) e imprime a URL sem abrir
-> navegador. Faça um túnel — `ssh -L 8765:localhost:8765 seu-host` — e abra a
-> URL no navegador da sua máquina. Detalhes em
-> [`docs/gerar-credenciais-gmail.md`](docs/gerar-credenciais-gmail.md).
+> **OAuth login on a headless machine / over SSH:** `--login` starts a local
+> server on port `OAUTH_PORT` (default 8765) and prints the URL without
+> opening a browser. Tunnel it — `ssh -L 8765:localhost:8765 your-host` — and
+> open the URL in your local browser. Details in
+> [`docs/gmail-credentials.md`](docs/gmail-credentials.md).
 
 ---
 
-## Uso
+## Usage (standalone)
 
 ### CLI
 
 ```bash
-python -m src.orquestrador [opções]
-  --conta NOME                    qual conta processar (config/NOME/).
-                                  Omitido: TODAS as contas configuradas
-  --modo {incremental,completo}   incremental (padrão) usa a History API;
-                                  completo varre o backlog inteiro
-  --dry-run                       não aplica nada; só mostra o que faria
-  --reprocessar                   reprocessa mensagens já marcadas Processado
-  --max N                         limita quantas mensagens processar
-  --login                         adiciona/reautentica uma conta e sai
-  --sugerir-categorias            sugere categorias novas a partir da caixa e sai
-  --aceitar NUMS                  aceita sugestões salvas ('1,3' ou 'todas')
+python -m src.orquestrador [options]
+  --conta NAME                    which account to process (config/NAME/).
+                                  Omitted: ALL configured accounts
+  --modo {incremental,completo}   incremental (default) uses the History API;
+                                  completo sweeps the whole backlog
+  --dry-run                       applies nothing; only shows what it would do
+  --reprocessar                   reprocess messages already marked Processed
+  --max N                         limit how many messages to process
+  --login                         add/re-authenticate an account and exit
+  --sugerir-categorias            suggest new categories from the mailbox and exit
+  --aceitar NUMS                  accept saved suggestions ('1,3' or 'todas')
 ```
 
-Na 1ª execução incremental, o Polaris só **fixa o cursor** (bootstrap) e não
-processa nada. Use `--modo completo` para o backlog existente.
+On the first incremental run, Polaris only **pins the cursor** (bootstrap) and
+processes nothing. Use `--modo completo` for the existing backlog.
 
-### Sugestão de categorias (IA)
+### AI category suggestions
 
-Não sabe por onde começar as categorias? Deixe o modelo olhar a sua caixa e
-propor — você só marca o que quiser:
+Not sure where to start with categories? Let the model look at your mailbox
+and propose — you only tick what you want:
 
 ```bash
 python -m src.orquestrador --conta principal --sugerir-categorias --max 200
 ```
 
-Ele amostra os emails mais recentes (**só remetente/assunto**, sem baixar o
-conteúdo), propõe categorias novas — sem repetir as que você já tem — e mostra
-a lista numerada para você aceitar (`1,3`, `todos` ou Enter para nenhuma). As
-aceitas entram no `categorias.yaml` com `permitir_exclusao: false` (exclusão é
-sempre decisão sua, explícita) e um backup `.bak` é criado antes.
+It samples your most recent emails (**sender/subject only**, never the body),
+proposes new categories — without repeating the ones you already have — and
+shows a numbered list for you to accept (`1,3`, `todos`, or Enter for none).
+Accepted ones land in `categorias.yaml` with `permitir_exclusao: false`
+(trashing is always your explicit decision) and a `.bak` backup is written
+first.
 
-Sem terminal interativo (automação/front-end), as sugestões são salvas em
-`logs/<conta>/sugestoes.json`; o aceite vem depois:
+Without an interactive terminal (automation/front-end), suggestions are saved
+to `logs/<account>/sugestoes.json`; acceptance comes later:
 
 ```bash
 python -m src.orquestrador --conta principal --aceitar '1,2'
 ```
 
-### Múltiplas contas
+### Multiple accounts
 
-Cada conta é um perfil independente em `config/<conta>/` (token, categorias e
-estado próprios); o `credentials.json` é **compartilhado** (um app OAuth
-autoriza várias contas Google). Adicionar outra conta é **um comando**:
+Each account is an independent profile in `config/<account>/` (its own token,
+categories and state); `credentials.json` is **shared** (one OAuth app
+authorizes several Google accounts). Adding another account is **one
+command**:
 
 ```bash
-python -m src.orquestrador --conta trabalho --login   # abre o login e semeia as categorias
-$EDITOR config/trabalho/categorias.yaml
+python -m src.orquestrador --conta work --login   # opens the login and seeds categories
+$EDITOR config/work/categorias.yaml
 ```
 
-Rode uma conta com `--conta trabalho`, ou **todas de uma vez** omitindo `--conta`
-(o padrão — perfeito para o timer processar cada conta em sequência).
+Run one account with `--conta work`, or **all at once** by omitting `--conta`
+(the default — perfect for a timer to process each account in sequence).
 
-### Docker (recomendado para o dia a dia)
+### Docker (recommended for day-to-day)
 
 ```bash
 docker compose build
-docker compose run --rm polaris --modo incremental --dry-run   # teste
-docker compose run --rm polaris --modo incremental             # pra valer
+docker compose run --rm polaris --modo incremental --dry-run   # test
+docker compose run --rm polaris --modo incremental             # for real
 ```
 
-O `docker-compose.yml` monta `config/` e `logs/` como volumes (nada sensível
-entra na imagem) e carrega o `.env` via `env_file`.
+`docker-compose.yml` mounts `config/` and `logs/` as volumes (nothing
+sensitive enters the image) and loads `.env` via `env_file`.
 
-### Agendamento (systemd timer no host)
+### Scheduling (systemd timer on the host)
 
-O Polaris é run-once; o agendamento fica no host, não no container. Copie os
-exemplos, **ajuste os caminhos e o horário**, e habilite:
+Polaris is run-once; scheduling lives on the host, not in the container. Copy
+the examples, **adjust paths and time**, and enable:
 
 ```bash
 cp systemd/polaris.service.example ~/.config/systemd/user/polaris.service
 cp systemd/polaris.timer.example   ~/.config/systemd/user/polaris.timer
-$EDITOR ~/.config/systemd/user/polaris.*   # caminhos + OnCalendar
+$EDITOR ~/.config/systemd/user/polaris.*   # paths + OnCalendar
 systemctl --user daemon-reload
 systemctl --user enable --now polaris.timer
 ```
 
-Se o seu modelo **não** fica sempre ligado, o `.service` tem hooks opcionais
-(`ExecStartPre`/`ExecStopPost`) para acordar/desligar o modelo em volta da
-execução — aponte para o seu próprio script (o Polaris não embute isso).
+If your model machine is **not** always on, the `.service` has optional hooks
+(`ExecStartPre`/`ExecStopPost`) to wake/stop the model around the run — point
+them at your own script (Polaris does not embed this).
 
 ---
 
-## Auditoria e reversão
+## Audit and reversal
 
-- **Log de decisões:** cada execução real acrescenta uma linha JSON em
-  `logs/decisoes.jsonl` (remetente, assunto, categoria, confiança, ação,
-  motivo). É a fonte de verdade para ajustar categorias/limiares com evidência.
-  Retenção configurável (`LOG_RETENCAO_DIAS`, default 90).
-- **Reverter arquivamento:** os emails continuam no Gmail, só saíram da inbox —
-  busque pela label da categoria.
-- **Reverter exclusão:** tudo vai para a **Lixeira** (recuperável ~30 dias),
-  nunca apagado. No modo sombra, sequer isso: é só a label
-  `Polaris/Lixeira-candidata`, que você remove quando quiser.
+- **Decision log:** every real run appends a JSON line to
+  `logs/decisoes.jsonl` (CLI) or `/config/polaris/<email>/decisions.jsonl`
+  (HA integration): sender, subject, category, confidence, action, reason.
+  It is the source of truth for tuning categories/thresholds with evidence.
+  Retention is configurable (`LOG_RETENCAO_DIAS`, default 90).
+- **Undo archiving:** the emails are still in Gmail, just out of the inbox —
+  search by the category label.
+- **Undo trashing:** everything goes to the **Trash** (recoverable ~30 days),
+  never deleted. In shadow mode not even that: it is just the
+  `Polaris/Lixeira-candidata` label, which you remove whenever you want.
 
 ---
 
-## Configuração (`.env`)
+## Configuration (`.env`, standalone)
 
-| Variável | Default | Descrição |
-|----------|---------|-----------|
-| `LLM_BASE_URL` | — | Endpoint OpenAI-compatible (com `/v1`). **Obrigatório.** |
-| `LLM_MODEL` | — | Nome do modelo como o endpoint o expõe. **Obrigatório.** |
-| `LLM_API_KEY` | vazio | Chave (vazio para endpoints locais). |
-| `LLM_TEMPERATURE` | `0.0` | Temperatura da classificação. |
-| `LLM_MAX_TOKENS` | `400` | Teto de tokens da resposta. |
-| `LLM_TIMEOUT` | `120` | Timeout (s) por chamada. |
-| `MODO_SOMBRA_EXCLUSAO` | `true` | Exclusão vira apenas label `Lixeira-candidata`. Mantenha `true`. |
-| `EXCLUSAO_PERMANENTE` | `false` | Reservado; o código ignora — exclusão é sempre Lixeira. |
-| `LOG_RETENCAO_DIAS` | `90` | Retenção do `decisoes.jsonl`. |
-| `OAUTH_PORT` | `8765` | Porta do servidor de login OAuth. |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_BASE_URL` | — | OpenAI-compatible endpoint (with `/v1`). **Required.** |
+| `LLM_MODEL` | — | Model name as the endpoint exposes it. **Required.** |
+| `LLM_API_KEY` | empty | Key (empty for local endpoints). |
+| `LLM_TEMPERATURE` | `0.0` | Classification temperature. |
+| `LLM_MAX_TOKENS` | `400` | Response token cap. |
+| `LLM_TIMEOUT` | `120` | Timeout (s) per call. |
+| `MODO_SOMBRA_EXCLUSAO` | `true` | Trashing becomes just the candidate label. Keep `true`. |
+| `EXCLUSAO_PERMANENTE` | `false` | Reserved; the code ignores it — trashing is always the Trash. |
+| `LOG_RETENCAO_DIAS` | `90` | `decisoes.jsonl` retention. |
+| `OAUTH_PORT` | `8765` | OAuth login server port. |
 
-As **categorias** ficam em `config/<conta>/categorias.yaml` (gitignored — nomes
-de labels são dado pessoal). Cada categoria tem `nome`, `descricao` (orienta o
-modelo) e as flags `permitir_exclusao` / `arquivar_permitido`. Trocar
-categorias **não** exige mexer em Python.
+**Categories** live in `config/<account>/categorias.yaml` (gitignored — label
+names are personal data). Each category has `nome`, `descricao` (guides the
+model) and the `permitir_exclusao` / `arquivar_permitido` flags. Changing
+categories requires **no** Python changes.
 
 ---
 
 ## Troubleshooting
 
-| Sintoma | Causa provável |
-|---------|----------------|
-| `Endpoint LLM indisponível. Pulando.` | O modelo/endpoint não respondeu. O Polaris pula (exit 0); rode de novo com o modelo no ar. |
-| Container não alcança o modelo em `localhost` | Dentro do container, `localhost` é o próprio container. Use `host.docker.internal` (modelo no host) ou o IP da LAN. |
-| `Sem token OAuth válido` / `Conta sem login` | Faltou o `--login` daquela conta (o token fica em `config/<conta>/token.json`). |
-| Login OK mas para em ~7 dias | App OAuth ficou em *Testing*. Publique **"In production"** (o refresh token deixa de expirar). Veja o tutorial. |
-| `credentials.json não encontrado` | O JSON baixado não foi salvo em `config/credentials.json`. |
+| Symptom | Likely cause |
+|---------|--------------|
+| `LLM endpoint unavailable. Skipping.` | The model/endpoint did not respond. Polaris skips (exit 0); run again with the model up. |
+| Container cannot reach the model on `localhost` | Inside the container, `localhost` is the container itself. Use `host.docker.internal` (model on the host) or the LAN IP. |
+| `No valid OAuth token` / account without login | That account is missing `--login` (the token lives in `config/<account>/token.json`). |
+| Login works but dies in ~7 days | The OAuth app was left in *Testing*. Publish it **"In production"** (the refresh token stops expiring). See the guide. |
+| `credentials.json not found` | The downloaded JSON was not saved to `config/credentials.json`. |
 
 ---
 
-## Segurança e privacidade
+## Security and privacy
 
-- Escopo mínimo `gmail.modify`; nunca `send` nem `delete` permanente.
-- Nada sensível é versionado: o `.gitignore` ignora **tudo** em `config/`
-  (o `credentials.json` compartilhado e as pastas por-conta `config/<conta>/`
-  com `token.json`, `categorias.yaml` e `state.json`), além do `.env` e de
-  `logs/`. O repositório traz apenas os `.example` genéricos.
-- O corpo do email é tratado como **entrada não confiável**: o classificador
-  delimita o conteúdo e instrui o modelo a ignorar comandos vindos de dentro
-  dele (defesa contra prompt injection), com guardrails determinísticos como
-  rede de segurança.
+- Minimal `gmail.modify` scope; never `send`, never permanent `delete`.
+- Nothing sensitive is versioned: `.gitignore` ignores **everything** under
+  `config/` (the shared `credentials.json` and the per-account
+  `config/<account>/` folders with `token.json`, `categorias.yaml` and
+  `state.json`), plus `.env` and `logs/`. The repository ships only generic
+  `.example` files.
+- The email body is treated as **untrusted input**: the classifier fences the
+  content and instructs the model to ignore commands coming from inside it
+  (prompt-injection defense), with deterministic guardrails as the safety
+  net.
 
 ---
 
-## Licença
+## License
 
 [MIT](LICENSE) © 2026 Leonardo Arouck.

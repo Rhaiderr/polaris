@@ -2,115 +2,115 @@
   "config": {
     "step": {
       "pick_implementation": {
-        "title": "Escolha a credencial"
+        "title": "Pick authentication method"
       },
       "reauth_confirm": {
-        "title": "Reautenticar a conta",
-        "description": "O acesso ao Gmail expirou ou foi revogado. Entre com o Google novamente para continuar."
+        "title": "Re-authenticate account",
+        "description": "Gmail access expired or was revoked. Sign in with Google again to continue."
       }
     },
     "abort": {
-      "already_configured": "Esta conta Gmail já está configurada.",
-      "already_in_progress": "A configuração já está em andamento.",
-      "authorize_url_timeout": "Tempo esgotado ao gerar a URL de autorização.",
-      "cannot_connect": "Não foi possível consultar o Gmail com o token obtido.",
-      "missing_configuration": "Registre primeiro a credencial OAuth (client ID/secret) em Credenciais de Aplicação.",
-      "missing_credentials": "Registre primeiro a credencial OAuth (client ID/secret) em Credenciais de Aplicação.",
-      "no_url_available": "URL indisponível — verifique a configuração de URL externa do Home Assistant.",
-      "oauth_error": "Resposta OAuth inválida.",
-      "oauth_failed": "Falha ao obter o token OAuth.",
-      "oauth_timeout": "Tempo esgotado na autorização OAuth.",
-      "oauth_unauthorized": "Autorização OAuth negada.",
-      "reauth_successful": "Reautenticação concluída.",
-      "user_rejected_authorize": "Autorização recusada pelo usuário."
+      "already_configured": "This Gmail account is already configured.",
+      "already_in_progress": "Configuration flow is already in progress.",
+      "authorize_url_timeout": "Timeout generating authorize URL.",
+      "cannot_connect": "Could not query Gmail with the obtained token.",
+      "missing_configuration": "Register the OAuth credential (client ID/secret) in Application Credentials first.",
+      "missing_credentials": "Register the OAuth credential (client ID/secret) in Application Credentials first.",
+      "no_url_available": "No URL available — check Home Assistant external URL configuration.",
+      "oauth_error": "Received invalid OAuth response.",
+      "oauth_failed": "Error while obtaining OAuth token.",
+      "oauth_timeout": "Timeout during OAuth authorization.",
+      "oauth_unauthorized": "OAuth authorization denied.",
+      "reauth_successful": "Re-authentication successful.",
+      "user_rejected_authorize": "Authorization rejected by user."
     },
     "create_entry": {
-      "default": "Conta Gmail vinculada. Configure o endpoint do modelo nas opções da integração."
+      "default": "Gmail account linked. Configure the model endpoint in the integration options."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Opções do Polaris",
+        "title": "Polaris options",
         "data": {
-          "llm_base_url": "URL do endpoint do modelo (termina em /v1)",
-          "llm_model": "Nome do modelo",
-          "llm_api_key": "API key (opcional)",
-          "agendamento_ativo": "Executar automaticamente todo dia",
-          "hora": "Horário da execução diária",
-          "max_por_execucao": "Máximo de emails por execução",
-          "modo_sombra_exclusao": "Modo sombra (candidatos à Lixeira só recebem label)",
-          "dry_run": "Simulação (não aplica nada no Gmail)"
+          "llm_base_url": "Model endpoint URL (ends with /v1)",
+          "llm_model": "Model name",
+          "llm_api_key": "API key (optional)",
+          "schedule_enabled": "Run automatically every day",
+          "schedule_time": "Daily run time",
+          "max_per_run": "Maximum emails per run",
+          "shadow_mode": "Shadow mode (trash candidates only get a label)",
+          "dry_run": "Dry run (nothing is applied to Gmail)"
         },
         "data_description": {
-          "llm_base_url": "Qualquer endpoint compatível com a API da OpenAI (LM Studio, Ollama, vLLM...).",
-          "modo_sombra_exclusao": "Desligue apenas depois de conferir os candidatos por alguns dias."
+          "llm_base_url": "Any OpenAI-compatible endpoint (LM Studio, Ollama, vLLM...).",
+          "shadow_mode": "Turn off only after reviewing the candidates for a few days."
         }
       }
     }
   },
   "application_credentials": {
-    "description": "Crie um app OAuth **tipo Web** no [Google Cloud Console]({oauth_creds_url}) com a URI de redirecionamento `{redirect_url}` e cole aqui o Client ID e o Client Secret. Guia passo a passo: [documentação]({docs_url})."
+    "description": "Create a **Web** OAuth app in the [Google Cloud Console]({oauth_creds_url}) with redirect URI `{redirect_url}` and paste the Client ID and Client Secret here. Step-by-step guide: [documentation]({docs_url})."
   },
   "entity": {
     "sensor": {
-      "ultima_execucao": {
-        "name": "Última execução"
+      "last_run": {
+        "name": "Last run"
       }
     }
   },
   "services": {
-    "executar": {
-      "name": "Executar triagem",
-      "description": "Roda a triagem de emails de uma conta (ou de todas).",
+    "run_triage": {
+      "name": "Run triage",
+      "description": "Runs email triage for one account (or all).",
       "fields": {
-        "conta": {
-          "name": "Conta",
-          "description": "Email da conta. Vazio = todas as contas configuradas."
+        "account": {
+          "name": "Account",
+          "description": "Account email. Empty = all configured accounts."
         },
-        "modo": {
-          "name": "Modo",
-          "description": "incremental (novos emails) ou completo (backlog)."
+        "mode": {
+          "name": "Mode",
+          "description": "incremental (new emails) or full (backlog)."
         },
         "max": {
-          "name": "Máximo",
-          "description": "Limite de emails nesta execução (padrão: opção da conta)."
+          "name": "Maximum",
+          "description": "Email limit for this run (default: account option)."
         },
         "dry_run": {
-          "name": "Simulação",
-          "description": "Não aplica nada no Gmail, só registra o que faria."
+          "name": "Dry run",
+          "description": "Applies nothing to Gmail, only logs what it would do."
         },
-        "reprocessar": {
-          "name": "Reprocessar",
-          "description": "Não pula emails já processados pelo Polaris."
+        "reprocess": {
+          "name": "Reprocess",
+          "description": "Do not skip emails already processed by Polaris."
         }
       }
     },
-    "sugerir_categorias": {
-      "name": "Sugerir categorias",
-      "description": "Varre uma amostra da caixa e sugere categorias novas (notificação com a lista).",
+    "suggest_categories": {
+      "name": "Suggest categories",
+      "description": "Samples the mailbox and suggests new categories (notification with the list).",
       "fields": {
-        "conta": {
-          "name": "Conta",
-          "description": "Email da conta a analisar."
+        "account": {
+          "name": "Account",
+          "description": "Account email to analyze."
         },
         "max": {
-          "name": "Amostra",
-          "description": "Quantos emails recentes amostrar."
+          "name": "Sample size",
+          "description": "How many recent emails to sample."
         }
       }
     },
-    "aceitar_categorias": {
-      "name": "Aceitar categorias sugeridas",
-      "description": "Adiciona as sugestões aceitas ao categorias.yaml da conta.",
+    "accept_categories": {
+      "name": "Accept suggested categories",
+      "description": "Adds the accepted suggestions to the account's categorias.yaml.",
       "fields": {
-        "conta": {
-          "name": "Conta",
-          "description": "Email da conta."
+        "account": {
+          "name": "Account",
+          "description": "Account email."
         },
-        "numeros": {
-          "name": "Números",
-          "description": "Quais aceitar: '1,3' ou 'todas'."
+        "numbers": {
+          "name": "Numbers",
+          "description": "Which to accept: '1,3' or 'all'."
         }
       }
     }

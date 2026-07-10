@@ -1,15 +1,20 @@
-"""Classificador — monta o prompt, chama o LLM e valida o contrato JSON.
+"""Classifier — builds the prompt, calls the LLM and validates the JSON contract.
 
-Contrato de retorno (estrito):
-  {"categoria": <da lista>, "arquivar": bool, "excluir": bool,
-   "confianca": 0.0-1.0, "motivo": "<frase curta>"}
+Strict return contract:
+  {"categoria": <from the list>, "arquivar": bool, "excluir": bool,
+   "confianca": 0.0-1.0, "motivo": "<short sentence>"}
 
-- A lista de categorias é montada DINAMICAMENTE do categorias.yaml (trocar
-  categorias não exige mexer aqui).
-- O corpo do email é ENTRADA NÃO CONFIÁVEL: fica delimitado por marcadores e o
-  sistema instrui o modelo a jamais obedecer instruções vindas de dentro dele
-  (defesa contra prompt injection).
-- JSON inválido / categoria fora da lista / confiança ausente → cai em Revisar.
+- The category list is built DYNAMICALLY from categorias.yaml (changing
+  categories requires no code changes here).
+- The email body is UNTRUSTED INPUT: it is fenced by markers and the system
+  prompt instructs the model to never obey instructions found inside it
+  (prompt-injection defense).
+- Invalid JSON / category not in the list / missing confidence → falls back
+  to the Review category.
+
+NOTE: the LLM prompts below are in Portuguese on purpose — that is the
+language the reference deployment was tuned and validated with. Making the
+prompt language configurable is on the roadmap.
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ from .gmail_client import EmailMsg
 from .llm_client import LLMClient
 
 
-# ------------------------------------------------------------------ catálogo
+# ------------------------------------------------------------------ catalog
 @dataclass
 class Catalogo:
     nomes: list[str]
@@ -38,7 +43,7 @@ class Catalogo:
         return self.permitir_exclusao.get(categoria, False)
 
     def elegivel_arquivamento(self, categoria: str) -> bool:
-        # Default True: categorias sem a flag continuam arquiváveis.
+        # Default True: categories without the flag remain archivable.
         return self.permitir_arquivamento.get(categoria, True)
 
 
@@ -50,7 +55,7 @@ def carregar_catalogo(path: str) -> Catalogo:
     revisar = dados.get("categoria_revisar", "Revisar")
     nomes = [c["nome"] for c in cats]
     if revisar not in nomes:
-        nomes.append(revisar)  # Revisar sempre disponível ao modelo
+        nomes.append(revisar)  # Review is always available to the model
     return Catalogo(
         nomes=nomes,
         descricoes={c["nome"]: c.get("descricao", "") for c in cats},
@@ -62,7 +67,7 @@ def carregar_catalogo(path: str) -> Catalogo:
     )
 
 
-# ------------------------------------------------------------- resultado
+# ------------------------------------------------------------- result
 @dataclass
 class Classificacao:
     categoria: str
@@ -70,7 +75,7 @@ class Classificacao:
     excluir: bool
     confianca: float
     motivo: str
-    invalido: bool = False  # True quando caiu em Revisar por falha de contrato
+    invalido: bool = False  # True when it fell back to Review on contract failure
 
 
 # ------------------------------------------------------------------ prompt
@@ -127,7 +132,7 @@ def montar_prompt(email: EmailMsg, cat: Catalogo) -> tuple[str, str]:
 
 # ------------------------------------------------------------------ parse
 def _extrair_json(texto: str) -> dict | None:
-    """Extrai o 1º objeto JSON do texto (tolera cercas ```json e ruído em volta)."""
+    """Extract the first JSON object (tolerates ```json fences and surrounding noise)."""
     t = texto.strip()
     t = re.sub(r"^```(?:json)?", "", t).strip()
     t = re.sub(r"```$", "", t).strip()
@@ -135,7 +140,7 @@ def _extrair_json(texto: str) -> dict | None:
         return json.loads(t)
     except json.JSONDecodeError:
         pass
-    m = re.search(r"\{.*\}", t, re.DOTALL)  # 1º {...} balanceado o suficiente
+    m = re.search(r"\{.*\}", t, re.DOTALL)  # first {...}, balanced enough
     if m:
         try:
             return json.loads(m.group(0))
@@ -145,7 +150,7 @@ def _extrair_json(texto: str) -> dict | None:
 
 
 def _validar(obj: dict, cat: Catalogo) -> Classificacao | None:
-    """Valida o contrato. Retorna None se inválido (chamador cai em Revisar)."""
+    """Validate the contract. Returns None when invalid (caller falls back to Review)."""
     if not isinstance(obj, dict):
         return None
     categoria = obj.get("categoria")
@@ -179,9 +184,9 @@ def _revisar(cat: Catalogo, motivo: str) -> Classificacao:
 
 
 def classificar(email: EmailMsg, cat: Catalogo, llm: LLMClient) -> Classificacao:
-    """Classifica um email. Falha de contrato → Revisar (nunca arquiva/exclui)."""
+    """Classify one email. Contract failure → Review (never archives/trashes)."""
     system, user = montar_prompt(email, cat)
-    resposta = llm.chat(system, user)  # LLMIndisponivel sobe para o orquestrador
+    resposta = llm.chat(system, user)  # LLMIndisponivel bubbles up to the engine
     obj = _extrair_json(resposta)
     if obj is None:
         return _revisar(cat, "JSON inválido na resposta do modelo")

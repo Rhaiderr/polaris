@@ -1,5 +1,7 @@
 # Gerar as credenciais OAuth do Gmail (passo manual, ~10 min)
 
+> 🇺🇸 [English version](gmail-credentials.md)
+
 O Polaris precisa de uma credencial OAuth do Google para falar com a sua conta
 Gmail no escopo `gmail.modify` (ler, aplicar labels, arquivar e mandar para a
 Lixeira — **sem** enviar nem apagar permanentemente).
