@@ -1,0 +1,118 @@
+{
+  "config": {
+    "step": {
+      "pick_implementation": {
+        "title": "Pick authentication method"
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate account",
+        "description": "Gmail access expired or was revoked. Sign in with Google again to continue."
+      }
+    },
+    "abort": {
+      "already_configured": "This Gmail account is already configured.",
+      "already_in_progress": "Configuration flow is already in progress.",
+      "authorize_url_timeout": "Timeout generating authorize URL.",
+      "cannot_connect": "Could not query Gmail with the obtained token.",
+      "missing_configuration": "Register the OAuth credential (client ID/secret) in Application Credentials first.",
+      "missing_credentials": "Register the OAuth credential (client ID/secret) in Application Credentials first.",
+      "no_url_available": "No URL available — check Home Assistant external URL configuration.",
+      "oauth_error": "Received invalid OAuth response.",
+      "oauth_failed": "Error while obtaining OAuth token.",
+      "oauth_timeout": "Timeout during OAuth authorization.",
+      "oauth_unauthorized": "OAuth authorization denied.",
+      "reauth_successful": "Re-authentication successful.",
+      "user_rejected_authorize": "Authorization rejected by user."
+    },
+    "create_entry": {
+      "default": "Gmail account linked. Configure the model endpoint in the integration options."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Polaris options",
+        "data": {
+          "llm_base_url": "Model endpoint URL (ends with /v1)",
+          "llm_model": "Model name",
+          "llm_api_key": "API key (optional)",
+          "agendamento_ativo": "Run automatically every day",
+          "hora": "Daily run time",
+          "max_por_execucao": "Maximum emails per run",
+          "modo_sombra_exclusao": "Shadow mode (trash candidates only get a label)",
+          "dry_run": "Dry run (nothing is applied to Gmail)"
+        },
+        "data_description": {
+          "llm_base_url": "Any OpenAI-compatible endpoint (LM Studio, Ollama, vLLM...).",
+          "modo_sombra_exclusao": "Turn off only after reviewing the candidates for a few days."
+        }
+      }
+    }
+  },
+  "application_credentials": {
+    "description": "Create a **Web** OAuth app in the [Google Cloud Console]({oauth_creds_url}) with redirect URI `{redirect_url}` and paste the Client ID and Client Secret here. Step-by-step guide: [documentation]({docs_url})."
+  },
+  "entity": {
+    "sensor": {
+      "ultima_execucao": {
+        "name": "Last run"
+      }
+    }
+  },
+  "services": {
+    "executar": {
+      "name": "Run triage",
+      "description": "Runs email triage for one account (or all).",
+      "fields": {
+        "conta": {
+          "name": "Account",
+          "description": "Account email. Empty = all configured accounts."
+        },
+        "modo": {
+          "name": "Mode",
+          "description": "incremental (new emails) or completo (backlog)."
+        },
+        "max": {
+          "name": "Maximum",
+          "description": "Email limit for this run (default: account option)."
+        },
+        "dry_run": {
+          "name": "Dry run",
+          "description": "Applies nothing to Gmail, only logs what it would do."
+        },
+        "reprocessar": {
+          "name": "Reprocess",
+          "description": "Do not skip emails already processed by Polaris."
+        }
+      }
+    },
+    "sugerir_categorias": {
+      "name": "Suggest categories",
+      "description": "Samples the mailbox and suggests new categories (notification with the list).",
+      "fields": {
+        "conta": {
+          "name": "Account",
+          "description": "Account email to analyze."
+        },
+        "max": {
+          "name": "Sample",
+          "description": "How many recent emails to sample."
+        }
+      }
+    },
+    "aceitar_categorias": {
+      "name": "Accept suggested categories",
+      "description": "Adds the accepted suggestions to the account's categorias.yaml.",
+      "fields": {
+        "conta": {
+          "name": "Account",
+          "description": "Account email."
+        },
+        "numeros": {
+          "name": "Numbers",
+          "description": "Which to accept: '1,3' or 'todas'."
+        }
+      }
+    }
+  }
+}
