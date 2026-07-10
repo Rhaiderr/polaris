@@ -83,6 +83,30 @@ modo incremental recupera na próxima rodada. Nada quebra.
 
 ---
 
+## Home Assistant (recomendado): integração nativa via HACS
+
+O Polaris roda como **integração do Home Assistant** — login com Google nativo
+(sem terminal, sem colar URL), múltiplas contas, agendamento e serviços:
+
+1. **HACS → Repositórios personalizados** → adicione
+   `https://github.com/Rhaiderr/polaris` (categoria *Integration*) → instale
+   **Polaris** e reinicie o HA.
+2. Crie a credencial OAuth (**app tipo Web**, uma vez):
+   [docs/gerar-credenciais-gmail.md](docs/gerar-credenciais-gmail.md).
+3. **Configurações → Dispositivos e serviços → Adicionar integração → Polaris**
+   → cole a credencial (1ª vez) → **Entrar com Google** → pronto. Outra conta?
+   Adicione a integração de novo.
+4. Nas **opções** da integração: endpoint do modelo, horário diário, modo sombra.
+5. Categorias em `/config/polaris/<email>/categorias.yaml` (criado com um
+   exemplo). Serviços: `polaris.executar` (triagem; modo `completo` p/ backlog),
+   `polaris.sugerir_categorias` / `polaris.aceitar_categorias` (sugestões por IA),
+   sensor de última execução e evento `polaris_execucao` para automações.
+
+O restante deste README cobre o uso **standalone** (CLI/Docker/systemd), que
+continua 100% suportado.
+
+---
+
 ## Quickstart (~10 min)
 
 ```bash

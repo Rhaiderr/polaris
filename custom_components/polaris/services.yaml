@@ -1,0 +1,60 @@
+executar:
+  fields:
+    conta:
+      required: false
+      example: "usuario@gmail.com"
+      selector:
+        text:
+    modo:
+      required: false
+      default: incremental
+      selector:
+        select:
+          options:
+            - incremental
+            - completo
+    max:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 500
+          mode: box
+    dry_run:
+      required: false
+      selector:
+        boolean:
+    reprocessar:
+      required: false
+      default: false
+      selector:
+        boolean:
+
+sugerir_categorias:
+  fields:
+    conta:
+      required: true
+      example: "usuario@gmail.com"
+      selector:
+        text:
+    max:
+      required: false
+      default: 120
+      selector:
+        number:
+          min: 20
+          max: 500
+          mode: box
+
+aceitar_categorias:
+  fields:
+    conta:
+      required: true
+      example: "usuario@gmail.com"
+      selector:
+        text:
+    numeros:
+      required: true
+      example: "1,3"
+      selector:
+        text:

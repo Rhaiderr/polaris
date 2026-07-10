@@ -1,0 +1,118 @@
+{
+  "config": {
+    "step": {
+      "pick_implementation": {
+        "title": "Escolha a credencial"
+      },
+      "reauth_confirm": {
+        "title": "Reautenticar a conta",
+        "description": "O acesso ao Gmail expirou ou foi revogado. Entre com o Google novamente para continuar."
+      }
+    },
+    "abort": {
+      "already_configured": "Esta conta Gmail já está configurada.",
+      "already_in_progress": "A configuração já está em andamento.",
+      "authorize_url_timeout": "Tempo esgotado ao gerar a URL de autorização.",
+      "cannot_connect": "Não foi possível consultar o Gmail com o token obtido.",
+      "missing_configuration": "Registre primeiro a credencial OAuth (client ID/secret) em Credenciais de Aplicação.",
+      "missing_credentials": "Registre primeiro a credencial OAuth (client ID/secret) em Credenciais de Aplicação.",
+      "no_url_available": "URL indisponível — verifique a configuração de URL externa do Home Assistant.",
+      "oauth_error": "Resposta OAuth inválida.",
+      "oauth_failed": "Falha ao obter o token OAuth.",
+      "oauth_timeout": "Tempo esgotado na autorização OAuth.",
+      "oauth_unauthorized": "Autorização OAuth negada.",
+      "reauth_successful": "Reautenticação concluída.",
+      "user_rejected_authorize": "Autorização recusada pelo usuário."
+    },
+    "create_entry": {
+      "default": "Conta Gmail vinculada. Configure o endpoint do modelo nas opções da integração."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opções do Polaris",
+        "data": {
+          "llm_base_url": "URL do endpoint do modelo (termina em /v1)",
+          "llm_model": "Nome do modelo",
+          "llm_api_key": "API key (opcional)",
+          "agendamento_ativo": "Executar automaticamente todo dia",
+          "hora": "Horário da execução diária",
+          "max_por_execucao": "Máximo de emails por execução",
+          "modo_sombra_exclusao": "Modo sombra (candidatos à Lixeira só recebem label)",
+          "dry_run": "Simulação (não aplica nada no Gmail)"
+        },
+        "data_description": {
+          "llm_base_url": "Qualquer endpoint compatível com a API da OpenAI (LM Studio, Ollama, vLLM...).",
+          "modo_sombra_exclusao": "Desligue apenas depois de conferir os candidatos por alguns dias."
+        }
+      }
+    }
+  },
+  "application_credentials": {
+    "description": "Crie um app OAuth **tipo Web** no [Google Cloud Console]({oauth_creds_url}) com a URI de redirecionamento `{redirect_url}` e cole aqui o Client ID e o Client Secret. Guia passo a passo: [documentação]({docs_url})."
+  },
+  "entity": {
+    "sensor": {
+      "ultima_execucao": {
+        "name": "Última execução"
+      }
+    }
+  },
+  "services": {
+    "executar": {
+      "name": "Executar triagem",
+      "description": "Roda a triagem de emails de uma conta (ou de todas).",
+      "fields": {
+        "conta": {
+          "name": "Conta",
+          "description": "Email da conta. Vazio = todas as contas configuradas."
+        },
+        "modo": {
+          "name": "Modo",
+          "description": "incremental (novos emails) ou completo (backlog)."
+        },
+        "max": {
+          "name": "Máximo",
+          "description": "Limite de emails nesta execução (padrão: opção da conta)."
+        },
+        "dry_run": {
+          "name": "Simulação",
+          "description": "Não aplica nada no Gmail, só registra o que faria."
+        },
+        "reprocessar": {
+          "name": "Reprocessar",
+          "description": "Não pula emails já processados pelo Polaris."
+        }
+      }
+    },
+    "sugerir_categorias": {
+      "name": "Sugerir categorias",
+      "description": "Varre uma amostra da caixa e sugere categorias novas (notificação com a lista).",
+      "fields": {
+        "conta": {
+          "name": "Conta",
+          "description": "Email da conta a analisar."
+        },
+        "max": {
+          "name": "Amostra",
+          "description": "Quantos emails recentes amostrar."
+        }
+      }
+    },
+    "aceitar_categorias": {
+      "name": "Aceitar categorias sugeridas",
+      "description": "Adiciona as sugestões aceitas ao categorias.yaml da conta.",
+      "fields": {
+        "conta": {
+          "name": "Conta",
+          "description": "Email da conta."
+        },
+        "numeros": {
+          "name": "Números",
+          "description": "Quais aceitar: '1,3' ou 'todas'."
+        }
+      }
+    }
+  }
+}

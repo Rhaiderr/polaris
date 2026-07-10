@@ -1,0 +1,42 @@
+# ============================================================================
+# Polaris — categorias de classificação (EXEMPLO GENÉRICO — versionado)
+#   cp config/categorias.yaml.example config/categorias.yaml
+# e ajuste as categorias para as SUAS labels do Gmail. O arquivo real
+# (config/categorias.yaml) é gitignored (nomes de labels são dado pessoal).
+#
+# O classificador monta a lista de categorias dinamicamente daqui — trocar
+# categorias NÃO exige mexer em Python. 'descricao' orienta o modelo.
+# ============================================================================
+
+# Labels internas do Polaris (não são categorias de classificação).
+# O Polaris cria essas labels no Gmail se não existirem.
+labels_internas:
+  processado: "Polaris/Processado"          # marcador de idempotência
+  lixeira_candidata: "Polaris/Lixeira-candidata"  # modo sombra de exclusão
+
+# Categoria de fallback quando o JSON é inválido ou a confiança é baixa.
+# DEVE existir e NUNCA permite exclusão/arquivamento automático.
+categoria_revisar: "Revisar"
+
+categorias:
+  - nome: "Promoções"
+    descricao: "Newsletters, marketing, ofertas, cupons, propaganda. Email de massa/promocional."
+    permitir_exclusao: true      # única categoria elegível a exclusão (ajuste a seu gosto)
+
+  - nome: "Recibos"
+    descricao: "Comprovantes, notas fiscais, faturas pagas, confirmações de pagamento."
+    permitir_exclusao: false
+
+  - nome: "Segurança"
+    descricao: "Códigos OTP, alertas de login, avisos de segurança. SENSÍVEL — nunca excluir."
+    permitir_exclusao: false
+    arquivar_permitido: false     # (opcional, default true) nunca sai da inbox automaticamente; só recebe label
+
+  # Exemplos de categorias pessoais — troque pelas suas labels reais:
+  - nome: "Trabalho"
+    descricao: "Assuntos profissionais, colegas, projetos do trabalho."
+    permitir_exclusao: false
+
+  - nome: "Finanças"
+    descricao: "Banco, cartão, investimentos, faturas."
+    permitir_exclusao: false

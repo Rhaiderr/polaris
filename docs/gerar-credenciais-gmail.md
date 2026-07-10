@@ -1,11 +1,18 @@
 # Gerar as credenciais OAuth do Gmail (passo manual, ~10 min)
 
-O Polaris precisa de um `config/credentials.json` (OAuth **Desktop**) para falar
-com a sua conta Gmail no escopo `gmail.modify` (ler, aplicar labels, arquivar e
-mandar para a Lixeira — **sem** enviar nem apagar permanentemente).
+O Polaris precisa de uma credencial OAuth do Google para falar com a sua conta
+Gmail no escopo `gmail.modify` (ler, aplicar labels, arquivar e mandar para a
+Lixeira — **sem** enviar nem apagar permanentemente).
 
-Você faz isto **uma vez**. Nada aqui é versionado — `credentials.json` e
-`token.json` são gitignored.
+O **tipo** da credencial depende de como você usa o Polaris:
+
+| Uso | Tipo de app OAuth | Onde a credencial entra |
+|---|---|---|
+| **Integração do Home Assistant** (recomendado) | **Aplicativo da Web** com redirect `https://my.home-assistant.io/redirect/oauth` | Colada na UI do HA (Credenciais de Aplicação) — passo 5a |
+| CLI / Docker standalone | **App para computador (Desktop)** | `config/credentials.json` — passo 5b |
+
+Você faz isto **uma vez** (os passos 1–4 são iguais para os dois usos). Nada
+aqui é versionado — credenciais e tokens são gitignored / ficam no HA.
 
 > ⚠️ **Passo crítico:** publique o app como **"In production"**. Se deixar em
 > *Testing*, o Google **expira o refresh token em 7 dias** e a automação para
@@ -44,7 +51,23 @@ Você faz isto **uma vez**. Nada aqui é versionado — `credentials.json` e
    - *Não* é preciso enviar para verificação: ela só serve para publicar o app
      para terceiros. Para uso pessoal, "In production" sem verificação basta.
 
-## 5. Criar as credenciais OAuth (tipo Desktop)
+## 5a. Credencial para a integração do Home Assistant (tipo Web)
+
+1. **APIs e serviços → Credenciais → Criar credenciais → ID do cliente OAuth**.
+2. Tipo de aplicativo: **Aplicativo da Web**.
+3. Em **URIs de redirecionamento autorizados**, adicione exatamente:
+   `https://my.home-assistant.io/redirect/oauth`
+4. **Criar** → anote o **Client ID** e o **Client Secret**.
+5. No Home Assistant: **Configurações → Dispositivos e serviços → Adicionar
+   integração → Polaris**. Na primeira vez, ele pede a credencial — cole o
+   Client ID e o Secret. Depois é só **Entrar com Google** e aprovar (na tela
+   "app não verificado": **Avançado → Acessar Polaris**). Para outras contas,
+   adicione a integração de novo — a credencial é reaproveitada.
+
+> Requer o serviço [My Home Assistant](https://my.home-assistant.io) habilitado
+> (padrão). O HA guarda e renova o token sozinho — não existe token.json.
+
+## 5b. Credencial para a CLI / Docker standalone (tipo Desktop)
 
 1. **APIs e serviços → Credenciais → Criar credenciais → ID do cliente OAuth**.
 2. Tipo de aplicativo: **App para computador (Desktop app)**.
@@ -52,7 +75,7 @@ Você faz isto **uma vez**. Nada aqui é versionado — `credentials.json` e
 4. **Fazer o download do JSON** → salve como **`config/credentials.json`** na
    pasta do Polaris.
 
-## 6. Primeiro login (gera o `token.json`)
+## 6. Primeiro login da CLI (gera o `token.json`) — só para o uso standalone
 
 Rode **fora do container** (precisa abrir o navegador), na pasta do projeto:
 
