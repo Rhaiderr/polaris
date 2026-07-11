@@ -13,12 +13,14 @@ Strict return contract:
   to the Review category.
 
 NOTE: the LLM prompts below are in Portuguese on purpose — that is the
-language the reference deployment was tuned and validated with. Making the
-prompt language configurable is on the roadmap.
+language the reference deployment was tuned and validated with. They are the
+DEFAULTS: each account can override them via prompt.yaml (see carregar_prompt /
+seed_prompt_yaml) to regulate the model for its own mailbox.
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 
@@ -26,6 +28,8 @@ import yaml
 
 from .gmail_client import EmailMsg
 from .llm_client import LLMClient
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------ catalog
@@ -82,7 +86,7 @@ class Classificacao:
 _SYSTEM_TMPL = """Você é um classificador de emails. Responda SOMENTE com um objeto JSON válido, sem texto antes ou depois, sem markdown, sem ```.
 
 Formato exato:
-{{"categoria": "<uma das categorias>", "arquivar": <true|false>, "excluir": <true|false>, "confianca": <número 0.0 a 1.0>, "motivo": "<frase curta em português>"}}
+{"categoria": "<uma das categorias>", "arquivar": <true|false>, "excluir": <true|false>, "confianca": <número 0.0 a 1.0>, "motivo": "<frase curta em português>"}
 
 Categorias permitidas (use EXATAMENTE um destes nomes):
 {lista_categorias}
@@ -109,6 +113,88 @@ List-Unsubscribe presente: {unsub}
 Responda apenas o JSON."""
 
 
+# ------------------------------------------------- user-editable prompt
+@dataclass
+class PromptTemplates:
+    """The two prompt halves. Users may override them via prompt.yaml so they
+    can regulate the model for their own mailbox without touching code."""
+    system: str
+    user: str
+
+
+DEFAULT_PROMPTS = PromptTemplates(system=_SYSTEM_TMPL, user=_USER_TMPL)
+
+# {lista_categorias} is what tells the model which categories exist — without
+# it the JSON contract can't be satisfied, so an override missing it is rejected.
+_TOKEN_OBRIGATORIO = "{lista_categorias}"
+
+_PROMPT_HEADER = """\
+# Polaris — prompt de classificação (editável)
+#
+# Este arquivo controla EXATAMENTE o texto que o modelo recebe para classificar
+# cada e-mail. Ajuste-o para calibrar o Polaris ao seu próprio caso de uso — por
+# exemplo, dar exemplos de remetentes, refinar quando arquivar, etc.
+#
+# Tokens substituídos automaticamente (mantenha-os no texto):
+#   sistema:  {lista_categorias}  {revisar}
+#   usuario:  {remetente}  {assunto}  {unsub}  {corpo}
+#
+# ⚠️  {lista_categorias} é OBRIGATÓRIO em "sistema": sem ele o modelo não conhece
+#     suas categorias. Se ele sumir, o Polaris ignora este arquivo e usa o padrão.
+# ⚠️  Não altere o bloco "Formato exato" a menos que saiba o que faz: o Polaris
+#     valida um contrato JSON e joga para "Revisar" qualquer resposta fora dele.
+#
+# Para voltar ao padrão, basta apagar este arquivo — ele é recriado no próximo run.
+"""
+
+
+def _bloco_yaml(texto: str) -> str:
+    """Indent text as a YAML block scalar body (2 spaces; blank lines stay empty)."""
+    return "\n".join(f"  {ln}" if ln else "" for ln in texto.split("\n"))
+
+
+def seed_prompt_yaml(path: str) -> None:
+    """Write prompt.yaml with the current defaults so the user can see and edit it.
+    The defaults come straight from the code, so the seeded file never drifts."""
+    conteudo = (
+        _PROMPT_HEADER
+        + "\nsistema: |-\n" + _bloco_yaml(_SYSTEM_TMPL)
+        + "\n\nusuario: |-\n" + _bloco_yaml(_USER_TMPL) + "\n"
+    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(conteudo)
+
+
+def carregar_prompt(path: str) -> PromptTemplates:
+    """Load prompt.yaml. Any problem (missing file, bad YAML, missing required
+    token) falls back to the built-in defaults so classification never breaks."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            dados = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return DEFAULT_PROMPTS
+    except (OSError, yaml.YAMLError) as err:
+        _LOGGER.warning("Could not read prompt.yaml (%s); using default prompt", err)
+        return DEFAULT_PROMPTS
+    system = dados.get("sistema") or _SYSTEM_TMPL
+    user = dados.get("usuario") or _USER_TMPL
+    if _TOKEN_OBRIGATORIO not in system:
+        _LOGGER.warning(
+            "prompt.yaml is missing %s in 'sistema'; using the default system "
+            "prompt so the model still sees the category list", _TOKEN_OBRIGATORIO)
+        system = _SYSTEM_TMPL
+    return PromptTemplates(system=str(system), user=str(user))
+
+
+def _render(template: str, valores: dict[str, str]) -> str:
+    """Fill {tokens} by plain substitution — tolerant of hand-edited YAML that
+    may contain other literal braces (unlike str.format, which would raise)."""
+    out = template
+    for chave, valor in valores.items():
+        out = out.replace("{" + chave + "}", valor)
+    return out
+
+
 def _lista_categorias(cat: Catalogo) -> str:
     linhas = []
     for nome in cat.nomes:
@@ -117,16 +203,19 @@ def _lista_categorias(cat: Catalogo) -> str:
     return "\n".join(linhas)
 
 
-def montar_prompt(email: EmailMsg, cat: Catalogo) -> tuple[str, str]:
-    system = _SYSTEM_TMPL.format(
-        lista_categorias=_lista_categorias(cat), revisar=cat.revisar
-    )
-    user = _USER_TMPL.format(
-        remetente=email.remetente,
-        assunto=email.assunto,
-        unsub="sim" if email.tem_list_unsubscribe else "não",
-        corpo=email.corpo or "(sem corpo textual)",
-    )
+def montar_prompt(email: EmailMsg, cat: Catalogo,
+                  prompts: PromptTemplates | None = None) -> tuple[str, str]:
+    prompts = prompts or DEFAULT_PROMPTS
+    system = _render(prompts.system, {
+        "lista_categorias": _lista_categorias(cat),
+        "revisar": cat.revisar,
+    })
+    user = _render(prompts.user, {
+        "remetente": email.remetente,
+        "assunto": email.assunto,
+        "unsub": "sim" if email.tem_list_unsubscribe else "não",
+        "corpo": email.corpo or "(sem corpo textual)",
+    })
     return system, user
 
 
@@ -183,9 +272,10 @@ def _revisar(cat: Catalogo, motivo: str) -> Classificacao:
     )
 
 
-def classificar(email: EmailMsg, cat: Catalogo, llm: LLMClient) -> Classificacao:
+def classificar(email: EmailMsg, cat: Catalogo, llm: LLMClient,
+                prompts: PromptTemplates | None = None) -> Classificacao:
     """Classify one email. Contract failure → Review (never archives/trashes)."""
-    system, user = montar_prompt(email, cat)
+    system, user = montar_prompt(email, cat, prompts)
     resposta = llm.chat(system, user)  # LLMIndisponivel bubbles up to the engine
     obj = _extrair_json(resposta)
     if obj is None:

@@ -27,7 +27,7 @@ import shutil
 from dataclasses import dataclass
 
 from .classificador import (Catalogo, Classificacao, carregar_catalogo,
-                            classificar)
+                            carregar_prompt, classificar, seed_prompt_yaml)
 from .gmail_client import EmailMsg, GmailClient, HistoryExpirada
 from .llm_client import LLMClient, LLMIndisponivel
 from . import prefiltro
@@ -70,6 +70,11 @@ def prepare_account_dir(account_dir: str) -> None:
         shutil.copy(CATEGORIES_EXAMPLE, cat_path)
         _LOGGER.info("Seeded initial categorias.yaml at %s — edit it with "
                      "your own Gmail labels", cat_path)
+    prompt_path = os.path.join(account_dir, "prompt.yaml")
+    if not os.path.exists(prompt_path):
+        seed_prompt_yaml(prompt_path)
+        _LOGGER.info("Seeded editable prompt.yaml at %s — tweak it to regulate "
+                     "the model for your mailbox", prompt_path)
 
 
 # ------------------------------------------------------------------ decision
@@ -131,6 +136,8 @@ class Motor:
         self.llm = llm
         self.cat = cat
         self.cfg = cfg
+        self.prompts = carregar_prompt(
+            os.path.join(cfg.account_dir, "prompt.yaml"))
         self.state_path = os.path.join(cfg.account_dir, "state.json")
         self.decisions_path = os.path.join(cfg.account_dir, "decisions.jsonl")
         self._label_id_cache: dict[str, str] = {}
@@ -184,7 +191,7 @@ class Motor:
                 cls = Classificacao(pf.categoria, False, False,
                                     pf.confianca, pf.motivo)
             else:
-                cls = classificar(email, self.cat, self.llm)
+                cls = classificar(email, self.cat, self.llm, self.prompts)
 
             contador = _memo(
                 lambda: self.gmail.contar_mensagens_thread(email.thread_id))

@@ -252,7 +252,10 @@ class PolarisAccount:
         if stats.get("interrupted"):
             corpo += " ⚠️ The model went down mid-run; the next run continues."
         if stats.get("report_link"):
-            corpo += f"\n\n📄 [Ver relatório completo]({stats['report_link']})"
+            corpo += (
+                "\n\n📄 "
+                f'<a href="{stats["report_link"]}" target="_blank" '
+                'rel="noopener">Ver relatório completo</a>')
         persistent_notification.async_create(
             self.hass, corpo, title="Polaris — triage summary",
             notification_id=nid)
@@ -287,8 +290,11 @@ class PolarisAccount:
                 f"suggested — {nomes}."
             )
             if link:
-                corpo += (f"\n\n📄 [Open the report to review what goes where and "
-                          f"accept with one click]({link})")
+                corpo += (
+                    "\n\n📄 "
+                    f'<a href="{link}" target="_blank" rel="noopener">Open the '
+                    "report to review what goes where and accept with one "
+                    "click</a>")
             else:
                 corpo += ("\n\nAccept with the `polaris.accept_categories` "
                           "service (numbers, e.g. `1,3` or `all`).")

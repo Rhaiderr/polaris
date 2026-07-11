@@ -29,7 +29,8 @@ import shutil
 import sys
 from dataclasses import dataclass
 
-from .classificador import Catalogo, Classificacao, carregar_catalogo, classificar
+from .classificador import (Catalogo, Classificacao, carregar_catalogo,
+                            carregar_prompt, classificar, seed_prompt_yaml)
 from .gmail_client import EmailMsg, GmailClient, HistoryExpirada
 from .llm_client import LLMClient, LLMIndisponivel
 from . import prefiltro
@@ -166,6 +167,7 @@ class Orquestrador:
         self.state_path = os.path.join(cdir, "state.json")
         self.decisoes_path = os.path.join(LOGS_DIR, conta, "decisoes.jsonl")
         self.cat = carregar_catalogo(self.categorias_path)
+        self.prompts = carregar_prompt(os.path.join(cdir, "prompt.yaml"))
         self.gmail = GmailClient(token_path=os.path.join(cdir, "token.json"))
         self.llm = LLMClient()
         self._label_id_cache: dict[str, str] = {}
@@ -213,7 +215,7 @@ class Orquestrador:
             if pf.pular_llm and pf.categoria:
                 cls = Classificacao(pf.categoria, False, False, pf.confianca, pf.motivo)
             else:
-                cls = classificar(email, self.cat, self.llm)
+                cls = classificar(email, self.cat, self.llm, self.prompts)
 
             contador = _memo(lambda: self.gmail.contar_mensagens_thread(email.thread_id))
             plano = decidir(email, cls, self.cat, MODO_SOMBRA, contador)
@@ -393,6 +395,9 @@ def _onboarding(conta: str) -> int:
     if not os.path.exists(cat_path) and os.path.exists(CATEGORIAS_EXEMPLO):
         shutil.copy(CATEGORIAS_EXEMPLO, cat_path)
         semeou = True
+    prompt_path = os.path.join(cdir, "prompt.yaml")
+    if not os.path.exists(prompt_path):
+        seed_prompt_yaml(prompt_path)
     log.info("")
     log.info("✅ Conta '%s' adicionada! Token em %s", conta, token_path)
     if semeou:
