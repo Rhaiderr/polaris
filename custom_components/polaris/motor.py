@@ -436,6 +436,103 @@ def _esc(s) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+# CSS/JS kept as plain constants (single braces) — interpolated as values into
+# the report f-string, so their braces never collide with f-string syntax.
+_REPORT_CSS = """
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+body{font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+margin:0;background:#f5f6f8;color:#1c2430}
+@media(prefers-color-scheme:dark){body{background:#12151a;color:#e7eaef}
+table,section,.controls{background:#1b2028!important;border-color:#2a313c!important}
+th{color:#98a1b0!important}
+input,select{background:#12151a!important;color:#e7eaef!important;border-color:#2a313c!important}}
+header{padding:20px;background:#2b6cb0;color:#fff}
+header h1{margin:0;font-size:20px} header .meta{opacity:.9;font-size:13px;margin-top:4px}
+main{max-width:1000px;margin:0 auto;padding:16px 20px 60px}
+.sim{background:#fef3c7;color:#92400e;padding:10px 14px;border-radius:8px;
+margin:14px 0;font-weight:600}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}
+.chip{padding:5px 11px;border-radius:999px;font-size:13px;font-weight:600;
+background:#e5e9f0;color:#1c2430;border:0;cursor:pointer;user-select:none}
+.chip.off{opacity:.3}
+.chip.trash{background:#fde2e1;color:#b42318} .chip.shadow{background:#e9e3fb;color:#5b21b6}
+.chip.archive{background:#dbeafe;color:#1e40af} .chip.review{background:#fef3c7;color:#92400e}
+.chip.label{background:#dcfce7;color:#166534}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+background:#fff;border:1px solid #e3e6ec;border-radius:10px;padding:10px 12px;margin:12px 0}
+.controls input,.controls select{padding:7px 10px;border:1px solid #d7dbe3;
+border-radius:8px;font-size:14px}
+#q{flex:1;min-width:180px} #conf{width:70px}
+.controls .cf{font-size:13px;color:#6b7484;display:flex;align-items:center;gap:6px}
+.controls .hint{font-size:12px;color:#98a1b0;flex-basis:100%}
+section{background:#fff;border:1px solid #e3e6ec;border-radius:10px;
+margin:16px 0;overflow:hidden}
+h2{font-size:15px;margin:0;padding:12px 16px;border-bottom:1px solid #e3e6ec}
+h2 .n{background:#00000018;padding:1px 8px;border-radius:999px;font-size:12px;margin-left:6px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 16px;border-bottom:1px solid #e3e6ec;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;color:#6b7484;font-weight:600;cursor:pointer;white-space:nowrap}
+th:hover{color:#2b6cb0}
+td.sub{font-weight:600;max-width:320px} td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.motivo{color:#6b7484;max-width:260px}
+tr:last-child td{border-bottom:0}
+.empty{padding:20px;color:#98a1b0;text-align:center}
+"""
+
+_REPORT_JS = """
+(function(){
+  var q=document.getElementById('q'), cat=document.getElementById('cat'),
+      conf=document.getElementById('conf'),
+      chips=[].slice.call(document.querySelectorAll('.chip')),
+      secs=[].slice.call(document.querySelectorAll('section[data-action]')),
+      off={};
+  function apply(){
+    var term=(q.value||'').toLowerCase(), c=cat.value, mc=parseFloat(conf.value)||0,
+        vis={};
+    secs.forEach(function(sec){
+      var act=sec.getAttribute('data-action'), n=0;
+      if(off[act]){ sec.style.display='none'; vis[act]=0; return; }
+      [].slice.call(sec.querySelectorAll('tbody tr')).forEach(function(tr){
+        var okC=(c==='__all__')||tr.getAttribute('data-cat')===c,
+            okF=parseFloat(tr.getAttribute('data-conf'))>=mc,
+            okT=!term||tr.textContent.toLowerCase().indexOf(term)>=0,
+            show=okC&&okF&&okT;
+        tr.style.display=show?'':'none'; if(show)n++;
+      });
+      vis[act]=n; sec.style.display=n?'':'none';
+      var nn=sec.querySelector('.n'); if(nn)nn.textContent=n;
+    });
+    chips.forEach(function(ch){
+      var a=ch.getAttribute('data-action'), cn=ch.querySelector('.cn');
+      if(cn&&vis[a]!==undefined)cn.textContent=vis[a];
+    });
+  }
+  q.addEventListener('input',apply); cat.addEventListener('change',apply);
+  conf.addEventListener('input',apply);
+  chips.forEach(function(ch){ ch.addEventListener('click',function(){
+    var a=ch.getAttribute('data-action');
+    off[a]=!off[a]; ch.classList.toggle('off',!!off[a]); apply();
+  });});
+  document.querySelectorAll('th[data-sort]').forEach(function(th){
+    th.addEventListener('click',function(){
+      var table=th.closest('table'), tb=table.querySelector('tbody'),
+          idx=[].indexOf.call(th.parentNode.children,th),
+          num=th.getAttribute('data-sort')==='num',
+          asc=!(th.__asc); th.__asc=asc,
+          rows=[].slice.call(tb.querySelectorAll('tr'));
+      rows.sort(function(a,b){
+        var x=a.children[idx].textContent.trim(), y=b.children[idx].textContent.trim();
+        if(num){x=parseFloat(x)||0;y=parseFloat(y)||0;return asc?x-y:y-x;}
+        return asc?x.localeCompare(y):y.localeCompare(x);
+      });
+      rows.forEach(function(r){tb.appendChild(r);});
+    });
+  });
+})();
+"""
+
+
 def _html_relatorio(doc: dict) -> str:
     itens = doc["itens"]
     por_acao: dict[str, list] = {}
@@ -446,9 +543,14 @@ def _html_relatorio(doc: dict) -> str:
     quando = _esc(doc["gerado_em"][:19].replace("T", " "))
     modo = "Completo" if doc["modo"] == "full" else "Incremental"
 
+    cats = sorted({r["category"] for r in itens})
+    cat_opts = "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>'
+                       for c in cats)
+
     chips = "".join(
-        f'<span class="chip {css}">{ic} {_esc(len(por_acao.get(k, [])))} '
-        f'{_esc(titulo.split(" (")[0])}</span>'
+        f'<button type="button" class="chip {css} on" data-action="{k}">'
+        f'{ic} <span class="cn">{_esc(len(por_acao.get(k, [])))}</span> '
+        f'{_esc(titulo.split(" (")[0])}</button>'
         for k, (ic, titulo, css) in _ACOES.items() if por_acao.get(k)
     )
 
@@ -460,7 +562,8 @@ def _html_relatorio(doc: dict) -> str:
         ic, titulo, css = _ACOES[k]
         linhas = sorted(linhas, key=lambda r: -r["confidence"])
         trs = "".join(
-            f"<tr><td class='sub'>{_esc(r['subject']) or '—'}</td>"
+            f"<tr data-cat=\"{_esc(r['category'])}\" data-conf=\"{r['confidence']:.2f}\">"
+            f"<td class='sub'>{_esc(r['subject']) or '—'}</td>"
             f"<td>{_esc(r['sender'])}</td>"
             f"<td>{_esc(r['category'])}</td>"
             f"<td class='num'>{r['confidence']:.2f}</td>"
@@ -468,49 +571,34 @@ def _html_relatorio(doc: dict) -> str:
             for r in linhas
         )
         secoes.append(
-            f"<section class='{css}'><h2>{ic} {_esc(titulo)} "
+            f"<section class='{css}' data-action='{k}'><h2>{ic} {_esc(titulo)} "
             f"<span class='n'>{len(linhas)}</span></h2>"
-            "<table><thead><tr><th>Assunto</th><th>Remetente</th>"
-            "<th>Categoria</th><th>Conf.</th><th>Motivo</th></tr></thead>"
+            "<table><thead><tr>"
+            "<th data-sort='text'>Assunto</th><th data-sort='text'>Remetente</th>"
+            "<th data-sort='text'>Categoria</th><th data-sort='num'>Conf.</th>"
+            "<th data-sort='text'>Motivo</th></tr></thead>"
             f"<tbody>{trs}</tbody></table></section>"
         )
 
     banner = ('<div class="sim">MODO SIMULAÇÃO — nada foi alterado no Gmail</div>'
               if sim else "")
+    controles = (
+        '<div class="controls">'
+        '<input id="q" type="search" placeholder="🔎 Buscar remetente, assunto, motivo…">'
+        f'<select id="cat"><option value="__all__">Todas as categorias</option>{cat_opts}</select>'
+        '<label class="cf">Conf. mín. '
+        '<input id="conf" type="number" min="0" max="1" step="0.05" value="0"></label>'
+        '<span class="hint">clique nas caixas p/ mostrar/ocultar · clique no cabeçalho p/ ordenar</span>'
+        '</div>'
+    )
+    corpo = "".join(secoes) or '<p>Nada processado nesta execução.</p>'
     return f"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polaris — relatório {conta}</title><style>
-:root{{color-scheme:light dark}}
-body{{font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-margin:0;background:#f5f6f8;color:#1c2430}}
-@media(prefers-color-scheme:dark){{body{{background:#12151a;color:#e7eaef}}
-table,section{{background:#1b2028!important;border-color:#2a313c!important}}
-th{{color:#98a1b0!important}}}}
-header{{padding:20px;background:#2b6cb0;color:#fff}}
-header h1{{margin:0;font-size:20px}} header .meta{{opacity:.9;font-size:13px;margin-top:4px}}
-main{{max-width:1000px;margin:0 auto;padding:16px 20px 60px}}
-.sim{{background:#fef3c7;color:#92400e;padding:10px 14px;border-radius:8px;
-margin:14px 0;font-weight:600}}
-.chips{{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}}
-.chip{{padding:5px 11px;border-radius:999px;font-size:13px;font-weight:600;
-background:#e5e9f0;color:#1c2430}}
-.chip.trash{{background:#fde2e1;color:#b42318}} .chip.shadow{{background:#e9e3fb;color:#5b21b6}}
-.chip.archive{{background:#dbeafe;color:#1e40af}} .chip.review{{background:#fef3c7;color:#92400e}}
-.chip.label{{background:#dcfce7;color:#166534}}
-section{{background:#fff;border:1px solid #e3e6ec;border-radius:10px;
-margin:16px 0;overflow:hidden}}
-h2{{font-size:15px;margin:0;padding:12px 16px;border-bottom:1px solid #e3e6ec}}
-h2 .n{{background:#00000018;padding:1px 8px;border-radius:999px;font-size:12px;margin-left:6px}}
-table{{width:100%;border-collapse:collapse;font-size:13px}}
-th,td{{text-align:left;padding:8px 16px;border-bottom:1px solid #e3e6ec;vertical-align:top}}
-th{{font-size:11px;text-transform:uppercase;color:#6b7484;font-weight:600}}
-td.sub{{font-weight:600;max-width:320px}} td.num{{text-align:right;font-variant-numeric:tabular-nums}}
-td.motivo{{color:#6b7484;max-width:260px}}
-tr:last-child td{{border-bottom:0}}
-</style></head><body>
+<title>Polaris — relatório {conta}</title><style>{_REPORT_CSS}</style></head><body>
 <header><h1>🧭 Polaris — {conta}</h1>
 <div class="meta">Execução {modo} · {quando} UTC · {_esc(len(itens))} e-mails</div></header>
-<main>{banner}<div class="chips">{chips}</div>{''.join(secoes) or '<p>Nada processado nesta execução.</p>'}</main>
+<main>{banner}<div class="chips">{chips}</div>{controles}{corpo}</main>
+<script>{_REPORT_JS}</script>
 </body></html>"""
 
 
