@@ -1,1 +1,1 @@
-"""Polaris — motor de triagem de Gmail com LLM local/genérico."""
+"""Polaris — Gmail triage engine with a local/generic LLM."""

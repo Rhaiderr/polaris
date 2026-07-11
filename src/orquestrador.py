@@ -1,19 +1,19 @@
-"""Orchestrator — o cérebro do Polaris (CLI, decisão, aplicação, estado).
+"""Orchestrator — the Polaris brain (CLI, decision, apply, state).
 
-Fluxo: busca (incremental|completo) → pré-filtro → classifica → decide ação
-segundo os limiares → aplica no Gmail (label / arquiva / trash|sombra) → loga.
+Flow: fetch (incremental|full) → pre-filter → classify → decide action per the
+thresholds → apply on Gmail (label / archive / trash|shadow) → log.
 
-Garantias de segurança embutidas:
-- limiares conservadores (Revisar<0.70, arquivar≥0.80, excluir≥0.95);
-- exclusão só para categoria elegível, COM List-Unsubscribe e em thread única;
-- MODO_SOMBRA_EXCLUSAO: em vez de trash, aplica 'Polaris/Lixeira-candidata';
-- idempotência via label 'Polaris/Processado';
-- --dry-run não toca no Gmail;
-- flock contra execução concorrente; state.json gravado atomicamente;
-- endpoint LLM indisponível → pula a execução (exit 0), sem quebrar.
+Built-in safety guarantees:
+- conservative thresholds (Review<0.70, archive≥0.80, delete≥0.95);
+- deletion only for eligible categories, WITH List-Unsubscribe and single thread;
+- MODO_SOMBRA_EXCLUSAO: instead of trashing, applies 'Polaris/Lixeira-candidata';
+- idempotency via the 'Polaris/Processado' label;
+- --dry-run never touches Gmail;
+- flock against concurrent runs; state.json written atomically;
+- LLM endpoint unavailable → skip the run (exit 0), no crash.
 
-CLI:
-  python -m src.orquestrador --login                 (1º OAuth, fora do container)
+CLI (flags kept in Portuguese as a config contract):
+  python -m src.orquestrador --login                 (1st OAuth, outside the container)
   python -m src.orquestrador --modo incremental [--dry-run] [--max N]
   python -m src.orquestrador --modo completo   [--dry-run] [--reprocessar] [--max N]
 """
@@ -35,30 +35,30 @@ from .gmail_client import EmailMsg, GmailClient, HistoryExpired
 from .llm_client import LLMClient, LLMUnavailable
 from . import prefiltro
 
-# --- Limiares aprovados (Fase 2 §2.4) ---------------------------------------
-THRESHOLD_REVIEW = 0.70   # < isto → Revisar
-THRESHOLD_ARCHIVE = 0.80  # ≥ isto e arquivar:true → remove da INBOX
-THRESHOLD_DELETE = 0.95   # ≥ isto (+ demais critérios) → trash/sombra
+# --- Approved thresholds ----------------------------------------------------
+THRESHOLD_REVIEW = 0.70   # below this → Review
+THRESHOLD_ARCHIVE = 0.80  # ≥ this and arquivar:true → remove from INBOX
+THRESHOLD_DELETE = 0.95   # ≥ this (+ other criteria) → trash/shadow
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
-# credentials.json é COMPARTILHADO; token/categorias/state são por-conta.
-CATEGORIAS_EXEMPLO = os.path.join(CONFIG_DIR, "categorias.yaml.example")
+# credentials.json is SHARED; token/categorias/state are per-account.
+CATEGORIES_EXAMPLE = os.path.join(CONFIG_DIR, "categorias.yaml.example")
 LOCK_PATH = os.path.join(LOGS_DIR, ".polaris.lock")
-CONTA_PADRAO = "principal"   # usado no --login quando --conta é omitido
+DEFAULT_ACCOUNT = "principal"   # used with --login when --conta is omitted
 
 log = logging.getLogger("polaris")
 
 
-# ---------------------------------------------------------------- contas
-def account_dir_for(conta: str) -> str:
-    """Diretório de config de uma conta: config/<conta>/ (token/categorias/state)."""
-    return os.path.join(CONFIG_DIR, conta)
+# ---------------------------------------------------------------- accounts
+def account_dir_for(account: str) -> str:
+    """Config directory of an account: config/<account>/ (token/categorias/state)."""
+    return os.path.join(CONFIG_DIR, account)
 
 
 def configured_profiles() -> list[str]:
-    """Contas já logadas = subpastas de config/ que têm token.json."""
+    """Accounts already logged in = config/ subfolders that have token.json."""
     if not os.path.isdir(CONFIG_DIR):
         return []
     return sorted(
@@ -72,12 +72,12 @@ ENV_PATH = os.path.join(BASE_DIR, ".env")
 
 
 def _load_dotenv(path: str = ENV_PATH) -> None:
-    """Carrega .env para os.environ (execução local, fora do Docker).
+    """Load .env into os.environ (local run, outside Docker).
 
-    Parser mínimo (sem dependência externa): ignora lines em branco e
-    comentários, aceita `KEY=VALUE` (com `export ` opcional e aspas). Variáveis
-    já presentes no ambiente têm precedência (não são sobrescritas) — assim o
-    env_file do compose e o EnvironmentFile do systemd continuam mandando.
+    Minimal parser (no external dependency): ignores blank lines and comments,
+    accepts `KEY=VALUE` (with optional `export ` and quotes). Variables already
+    present in the environment take precedence (not overwritten) — so the compose
+    env_file and the systemd EnvironmentFile keep winning.
     """
     if not os.path.exists(path):
         return
@@ -97,20 +97,20 @@ def _load_dotenv(path: str = ENV_PATH) -> None:
                 os.environ[key] = value
 
 
-def _env_bool(nome: str, default: bool) -> bool:
-    v = os.environ.get(nome)
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
     if v is None:
         return default
     return v.strip().lower() in ("1", "true", "yes", "sim", "on")
 
 
-# ------------------------------------------------------------------ decisão
+# ------------------------------------------------------------------ decision
 @dataclass
 class Plan:
-    add_labels: list[str]        # names de labels a adicionar (inclui Processado)
-    remove_inbox: bool           # arquivar
+    add_labels: list[str]        # label names to add (includes Processado)
+    remove_inbox: bool           # archive
     deletion: str | None         # None | "trash" | "sombra"
-    action: str                    # rótulo humano p/ log: revisar|label|arquivar|excluir|sombra
+    action: str                    # human action tag (pt values): revisar|label|arquivar|excluir|sombra
 
 
 def decide(
@@ -118,54 +118,54 @@ def decide(
     cls: Classification,
     cat: Catalog,
     shadow_mode: bool,
-    count_thread,   # callable() -> int (lazy: só chamado se for arquivar/excluir)
+    count_thread,   # callable() -> int (lazy: only called for archive/delete)
 ) -> Plan:
-    """Traduz a classificação em ações concretas conforme os limiares."""
+    """Translate the classification into concrete actions per the thresholds."""
     add = [cat.label_processed]
 
-    # JSON inválido OU baixa confiança → Revisar (não arquiva, não exclui).
+    # Invalid JSON OR low confidence -> Review (never archives, never deletes).
     if cls.invalid or cls.confidence < THRESHOLD_REVIEW:
         add.append(cat.review)
         return Plan(add, remove_inbox=False, deletion=None, action="revisar")
 
-    # Confiança suficiente → aplica a label da categoria.
+    # Confident enough -> apply the category label.
     if cls.category != cat.label_processed:
         add.append(cls.category)
 
-    # Candidato a EXCLUSÃO? (tem prioridade sobre só arquivar)
+    # Deletion candidate? (takes precedence over archive-only)
     wants_delete = (
         cls.delete
         and cat.eligible_delete(cls.category)
         and cls.confidence >= THRESHOLD_DELETE
-        and email.has_list_unsubscribe          # sinal determinístico obrigatório
+        and email.has_list_unsubscribe          # mandatory deterministic signal
     )
-    if wants_delete and count_thread() == 1:   # só thread de mensagem única
+    if wants_delete and count_thread() == 1:   # single-message threads only
         if shadow_mode:
             add.append(cat.label_trash_candidate)
             return Plan(add, remove_inbox=False, deletion="sombra", action="sombra")
         return Plan(add, remove_inbox=True, deletion="trash", action="excluir")
 
-    # Candidato a ARQUIVAR? (categorias sensíveis podem vetar o auto-arquivamento)
+    # Archive candidate? (sensitive categories may veto auto-archiving)
     if (cls.archive and cls.confidence >= THRESHOLD_ARCHIVE
             and cat.eligible_archive(cls.category)
             and count_thread() == 1):
         return Plan(add, remove_inbox=True, deletion=None, action="arquivar")
 
-    # Caso contrário: só a label da categoria.
+    # Otherwise: category label only.
     return Plan(add, remove_inbox=False, deletion=None, action="label")
 
 
-# ------------------------------------------------------------ orquestrador
+# ------------------------------------------------------------ orchestrator
 class Orchestrator:
-    def __init__(self, conta: str, dry_run: bool, reprocessar: bool, max_n: int | None):
-        self.conta = conta
+    def __init__(self, account: str, dry_run: bool, reprocessar: bool, max_n: int | None):
+        self.account = account
         self.dry_run = dry_run
         self.reprocessar = reprocessar
         self.max_n = max_n
-        cdir = account_dir_for(conta)
+        cdir = account_dir_for(account)
         self.categorias_path = os.path.join(cdir, "categorias.yaml")
         self.state_path = os.path.join(cdir, "state.json")
-        self.decisoes_path = os.path.join(LOGS_DIR, conta, "decisoes.jsonl")
+        self.decisoes_path = os.path.join(LOGS_DIR, account, "decisoes.jsonl")
         self.cat = load_catalog(self.categorias_path)
         self.prompts = load_prompt(os.path.join(cdir, "prompt.yaml"))
         self.gmail = GmailClient(token_path=os.path.join(cdir, "token.json"))
@@ -174,7 +174,7 @@ class Orchestrator:
         self.stats = {"vistos": 0, "processados": 0, "pulados": 0,
                       "revisar": 0, "arquivar": 0, "excluir": 0, "sombra": 0, "label": 0}
 
-    # ---- estado (leitura/gravação atômica) ----
+    # ---- state (atomic read/write) ----
     def _load_state(self) -> dict:
         if os.path.exists(self.state_path):
             with open(self.state_path, encoding="utf-8") as f:
@@ -190,23 +190,23 @@ class Orchestrator:
             json.dump(state, f, ensure_ascii=False, indent=2)
         os.replace(tmp, self.state_path)
 
-    # ---- label name -> id (cria se preciso) ----
+    # ---- label name -> id (created on demand) ----
     def _label_id(self, nome: str) -> str:
         if nome not in self._label_id_cache:
             self._label_id_cache[nome] = self.gmail.ensure_label(nome)
         return self._label_id_cache[nome]
 
-    # ---- loop principal de mensagens ----
+    # ---- main message loop ----
     def _process(self, pairs: list[dict]) -> None:
         processado_id = None if self.dry_run else self._label_id(self.cat.label_processed)
         for par in pairs:
             if self.max_n and self.stats["processados"] >= self.max_n:
-                log.info("--max %s atingido; parando.", self.max_n)
+                log.info("--max %s reached; stopping.", self.max_n)
                 break
             self.stats["vistos"] += 1
             email = self.gmail.get_email(par["id"])
 
-            # idempotência: pula quem já tem Polaris/Processado (salvo --reprocessar)
+            # idempotency: skip anything already marked Polaris/Processado (unless --reprocessar)
             if not self.reprocessar and processado_id and processado_id in email.label_ids:
                 self.stats["pulados"] += 1
                 continue
@@ -217,27 +217,27 @@ class Orchestrator:
             else:
                 cls = classify(email, self.cat, self.llm, self.prompts)
 
-            contador = _memo(lambda: self.gmail.count_thread_messages(email.thread_id))
-            plano = decide(email, cls, self.cat, MODO_SOMBRA, contador)
+            counter = _memo(lambda: self.gmail.count_thread_messages(email.thread_id))
+            plan = decide(email, cls, self.cat, SHADOW_MODE, counter)
 
-            self._apply(email, plano)
-            self._log_record(email, cls, plano)
+            self._apply(email, plan)
+            self._log_record(email, cls, plan)
             self.stats["processados"] += 1
-            self.stats[plano.action] = self.stats.get(plano.action, 0) + 1
+            self.stats[plan.action] = self.stats.get(plan.action, 0) + 1
 
-    def _apply(self, email: EmailMsg, plano: Plan) -> None:
+    def _apply(self, email: EmailMsg, plan: Plan) -> None:
         if self.dry_run:
             return
-        add_ids = [self._label_id(n) for n in plano.add_labels]
-        remove_ids = ["INBOX"] if plano.remove_inbox else []
-        if plano.deletion == "trash":
-            # aplica labels primeiro (rastro), depois manda p/ Lixeira
+        add_ids = [self._label_id(n) for n in plan.add_labels]
+        remove_ids = ["INBOX"] if plan.remove_inbox else []
+        if plan.deletion == "trash":
+            # apply labels first (audit trail), then send to Trash
             self.gmail.modify(email.id, add=add_ids, remove=remove_ids)
             self.gmail.trash(email.id)
         else:
             self.gmail.modify(email.id, add=add_ids, remove=remove_ids)
 
-    def _log_record(self, email: EmailMsg, cls: Classification, plano: Plan) -> None:
+    def _log_record(self, email: EmailMsg, cls: Classification, plan: Plan) -> None:
         record = {
             "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
             "id": email.id,
@@ -249,12 +249,12 @@ class Orchestrator:
             "arquivar": cls.archive,
             "excluir": cls.delete,
             "motivo": cls.reason,
-            "acao": plano.action,
+            "acao": plan.action,
             "dry_run": self.dry_run,
         }
         if self.dry_run:
-            log.info("[DRY] %s → %s [cat=%s conf=%.2f excluir=%s unsub=%s] %s",
-                     (email.subject or "(sem assunto)")[:50], plano.action,
+            log.info("[DRY] %s -> %s [cat=%s conf=%.2f delete=%s unsub=%s] %s",
+                     (email.subject or "(no subject)")[:50], plan.action,
                      cls.category, cls.confidence, cls.delete,
                      email.has_list_unsubscribe, cls.reason)
         else:
@@ -266,25 +266,25 @@ class Orchestrator:
     def incremental(self) -> None:
         state = self._load_state()
         if not state.get("historyId"):
-            # Bootstrap: fixa o cursor atual; backlog fica para o modo completo.
+            # Bootstrap: pin the current cursor; the backlog is for --modo completo.
             profile = self.gmail.get_profile()
             state["historyId"] = profile["historyId"]
             state["ultima_execucao"] = _now_iso()
             self._save_state(state)
-            log.info("Bootstrap: cursor historyId fixado (%s). Nada a processar. "
-                     "Rode --modo completo para o backlog.", profile["historyId"])
+            log.info("Bootstrap: historyId cursor pinned (%s). Nothing to process. "
+                     "Run --modo completo for the backlog.", profile["historyId"])
             return
         try:
-            pairs, novo_hid = self.gmail.history_added(state["historyId"])
-            log.info("Incremental: %d mensagem(ns) nova(s) desde o último cursor.", len(pairs))
+            pairs, new_hid = self.gmail.history_added(state["historyId"])
+            log.info("Incremental: %d new message(s) since the last cursor.", len(pairs))
         except HistoryExpired:
-            # Cursor velho demais: fallback por data + recontar o cursor.
-            depois = _after_query(state.get("ultima_execucao"))
-            log.warning("historyId expirado; fallback messages.list %s", depois)
-            pairs = self.gmail.messages_list(depois)
-            novo_hid = self.gmail.get_profile()["historyId"]
+            # Cursor too old: fall back by date + recompute the cursor.
+            after_q = _after_query(state.get("ultima_execucao"))
+            log.warning("historyId expired; fallback messages.list %s", after_q)
+            pairs = self.gmail.messages_list(after_q)
+            new_hid = self.gmail.get_profile()["historyId"]
         self._process(pairs)
-        state["historyId"] = novo_hid or state["historyId"]
+        state["historyId"] = new_hid or state["historyId"]
         state["ultima_execucao"] = _now_iso()
         self._save_state(state)
 
@@ -293,19 +293,19 @@ class Orchestrator:
         if not self.reprocessar:
             query += f' -label:"{self.cat.label_processed}"'
         pairs = self.gmail.messages_list(query, max_results=self.max_n)
-        log.info("Completo: %d mensagem(ns) candidata(s) (query: %s).", len(pairs), query)
+        log.info("Full: %d candidate message(s) (query: %s).", len(pairs), query)
         self._process(pairs)
         state = self._load_state()
         state["historyId"] = self.gmail.get_profile()["historyId"]
         state["ultima_execucao"] = _now_iso()
         self._save_state(state)
 
-    def _prune_logs(self, retencao_dias: int) -> None:
-        """Remove entradas do decisoes.jsonl (desta conta) mais antigas que a retenção."""
+    def _prune_logs(self, retention_days: int) -> None:
+        """Drop decisoes.jsonl entries (of this account) older than the retention."""
         if not os.path.exists(self.decisoes_path):
             return
-        limite = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retencao_dias)
-        manter = []
+        limit = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retention_days)
+        keep = []
         with open(self.decisoes_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -313,22 +313,22 @@ class Orchestrator:
                     continue
                 try:
                     ts = dt.datetime.fromisoformat(json.loads(line)["ts"])
-                    if ts >= limite:
-                        manter.append(line)
+                    if ts >= limit:
+                        keep.append(line)
                 except (json.JSONDecodeError, KeyError, ValueError):
-                    manter.append(line)  # não descarta o que não sei datar
+                    keep.append(line)  # keep whatever cannot be dated
         tmp = self.decisoes_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            f.write("\n".join(manter) + ("\n" if manter else ""))
+            f.write("\n".join(keep) + ("\n" if keep else ""))
         os.replace(tmp, self.decisoes_path)
 
     def summary(self) -> None:
         s = self.stats
-        log.info("Conta '%s' — summary: vistos=%d processados=%d pulados=%d | "
-                 "label=%d arquivar=%d revisar=%d excluir=%d sombra=%d%s",
-                 self.conta, s["vistos"], s["processados"], s["pulados"], s["label"],
+        log.info("Account '%s' — summary: seen=%d processed=%d skipped=%d | "
+                 "label=%d archive=%d review=%d delete=%d shadow=%d%s",
+                 self.account, s["vistos"], s["processados"], s["pulados"], s["label"],
                  s["arquivar"], s["revisar"], s["excluir"], s["sombra"],
-                 "  (DRY-RUN: nada aplicado)" if self.dry_run else "")
+                 "  (DRY-RUN: nothing applied)" if self.dry_run else "")
 
 
 # ------------------------------------------------------------------ util
@@ -337,7 +337,7 @@ def _now_iso() -> str:
 
 
 def _after_query(ultima_execucao: str | None) -> str:
-    """Query messages.list a partir da última execução (com 1 dia de folga)."""
+    """messages.list query since the last run (with a 1-day margin)."""
     if ultima_execucao:
         try:
             base = dt.datetime.fromisoformat(ultima_execucao)
@@ -345,12 +345,12 @@ def _after_query(ultima_execucao: str | None) -> str:
             base = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
     else:
         base = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
-    base -= dt.timedelta(days=1)  # folga para não perder mensagens na fronteira
+    base -= dt.timedelta(days=1)  # margin so boundary messages are not missed
     return f"after:{base.strftime('%Y/%m/%d')} -in:chats"
 
 
 def _memo(fn):
-    """Memoiza um callable de zero args (avalia no máximo 1x)."""
+    """Memoize a zero-arg callable (evaluated at most once)."""
     cache = {}
     def wrapped():
         if "v" not in cache:
@@ -371,18 +371,18 @@ def _setup_logging() -> None:
     log.addHandler(fh)
 
 
-# globais lidos do ambiente (definidos em main após carregar .env)
-MODO_SOMBRA = True
+# globals read from the environment (set in main after loading .env)
+SHADOW_MODE = True
 
 
-def _onboarding(conta: str) -> int:
-    """Adiciona uma conta: faz o login OAuth e deixa tudo pronto num comando.
+def _onboarding(account: str) -> int:
+    """Add an account: do the OAuth login and get everything ready in one command.
 
-    Mantém o fluxo simples para não assustar quem nunca configurou nada:
-    cria config/<conta>/, gera o token, semeia um categorias.yaml inicial e
-    imprime o próximo passo.
+    Keeps the flow simple so first-time users are not scared off: creates
+    config/<account>/, generates the token, seeds an initial categorias.yaml and
+    prints the next step.
     """
-    cdir = account_dir_for(conta)
+    cdir = account_dir_for(account)
     os.makedirs(cdir, exist_ok=True)
     token_path = os.path.join(cdir, "token.json")
     try:
@@ -391,68 +391,68 @@ def _onboarding(conta: str) -> int:
         log.error("%s", e)
         return 1
     cat_path = os.path.join(cdir, "categorias.yaml")
-    semeou = False
-    if not os.path.exists(cat_path) and os.path.exists(CATEGORIAS_EXEMPLO):
-        shutil.copy(CATEGORIAS_EXEMPLO, cat_path)
-        semeou = True
+    seeded = False
+    if not os.path.exists(cat_path) and os.path.exists(CATEGORIES_EXAMPLE):
+        shutil.copy(CATEGORIES_EXAMPLE, cat_path)
+        seeded = True
     prompt_path = os.path.join(cdir, "prompt.yaml")
     if not os.path.exists(prompt_path):
         seed_prompt_yaml(prompt_path)
     log.info("")
-    log.info("✅ Conta '%s' adicionada! Token em %s", conta, token_path)
-    if semeou:
-        log.info("   Criei um categorias.yaml inicial: %s", cat_path)
-        log.info("   → Edite com as SUAS categorias/labels do Gmail (é só text).")
-    log.info("   Veja a triagem SEM apply nada:")
-    log.info("       python -m src.orquestrador --conta %s --modo completo --dry-run --max 30",
-             conta)
+    log.info("✅ Account '%s' added! Token at %s", account, token_path)
+    if seeded:
+        log.info("   Seeded an initial categorias.yaml: %s", cat_path)
+        log.info("   -> Edit it with YOUR own Gmail categories/labels (plain text).")
+    log.info("   Preview the triage WITHOUT applying anything:")
+    log.info("       python -m src.orquestrador --account %s --modo completo --dry-run --max 30",
+             account)
     return 0
 
 
-def _run_account(conta: str, args, retencao: int) -> int:
-    """Roda a triagem de UMA conta. Retorna 0 em sucesso, 1 se falhou ao iniciar."""
-    log.info("──── Conta '%s' ────", conta)
+def _run_account(account: str, args, retention: int) -> int:
+    """Run the triage for ONE account. Returns 0 on success, 1 if it failed to start."""
+    log.info("──── Account '%s' ────", account)
     try:
-        orq = Orchestrator(conta, args.dry_run, args.reprocessar, args.max_n)
-    except Exception as e:  # falta de token/categorias etc.
-        log.error("Conta '%s': falha ao inicializar: %s", conta, e)
+        orq = Orchestrator(account, args.dry_run, args.reprocessar, args.max_n)
+    except Exception as e:  # missing token/categorias etc.
+        log.error("Account '%s': failed to initialize: %s", account, e)
         return 1
     if not args.dry_run:
-        orq._prune_logs(retencao)
+        orq._prune_logs(retention)
     try:
-        if args.mode == "incremental":
+        if args.modo == "incremental":
             orq.incremental()
         else:
             orq.full()
     except LLMUnavailable as e:
-        log.warning("Conta '%s': LLM caiu no meio (%s). Sigo sem erro; "
-                    "o incremental recupera na próxima rodada.", conta, e)
+        log.warning("Account '%s': LLM went down mid-run (%s). Continuing without "
+                    "error; the incremental run catches up next time.", account, e)
     finally:
         orq.summary()
     return 0
 
 
-def _suggest_categories(conta: str, args) -> int:
-    """Fluxo de sugestão de categorias (futuro passo 3 do wizard do add-on).
+def _suggest_categories(account: str, args) -> int:
+    """Category suggestion flow.
 
-    --suggest-categories: amostra a caixa → LLM propõe → terminal interativo
-    aceita na hora; sem TTY, salva logs/<conta>/sugestoes.json e sai (o front
-    lê esse JSON e devolve o aceite via --aceitar).
-    --aceitar '1,3'|'todas': aplica sugestões salvas ao categorias.yaml.
+    --sugerir-categorias: sample the mailbox -> LLM proposes -> interactive
+    terminal accepts on the spot; without a TTY, saves logs/<account>/sugestoes.json
+    and exits (a front-end reads that JSON and sends the acceptance via --aceitar).
+    --aceitar '1,3'|'todas': apply saved suggestions to categorias.yaml.
     """
     from . import sugestor
 
-    cdir = account_dir_for(conta)
+    cdir = account_dir_for(account)
     categorias_path = os.path.join(cdir, "categorias.yaml")
     if not os.path.exists(os.path.join(cdir, "token.json")):
-        log.error("Conta '%s' sem login. Rode: python -m src.orquestrador "
-                  "--conta %s --login", conta, conta)
+        log.error("Account '%s' not logged in. Run: python -m src.orquestrador "
+                  "--account %s --login", account, account)
         return 1
 
-    # ---- só aceite (front / segunda etapa) ----
-    if args.aceitar and not args.suggest:
+    # ---- accept only (front-end / second step) ----
+    if args.aceitar and not args.sugerir:
         try:
-            sugestoes = sugestor.load_json(conta, LOGS_DIR)
+            sugestoes = sugestor.load_json(account, LOGS_DIR)
         except FileNotFoundError as e:
             log.error("%s", e)
             return 1
@@ -462,134 +462,134 @@ def _suggest_categories(conta: str, args) -> int:
             idx = [int(t) for t in args.aceitar.split(",") if t.strip().isdigit()]
             accepted = [sugestoes[i - 1] for i in idx if 1 <= i <= len(sugestoes)]
         if not accepted:
-            log.info("Nada a aceitar.")
+            log.info("Nothing to accept.")
             return 0
         sugestor.apply_accepts(categorias_path, accepted)
-        log.info("✅ %d categoria(s) adicionada(s) a %s: %s",
+        log.info("✅ %d category(ies) added to %s: %s",
                  len(accepted), categorias_path,
                  ", ".join(a["nome"] for a in accepted))
         return 0
 
-    # ---- varredura + sugestão ----
+    # ---- scan + suggestion ----
     try:
         cat = load_catalog(categorias_path)
         gmail = GmailClient(token_path=os.path.join(cdir, "token.json"))
         llm = LLMClient()
     except Exception as e:
-        log.error("Conta '%s': falha ao inicializar: %s", conta, e)
+        log.error("Account '%s': failed to initialize: %s", account, e)
         return 1
     if not llm.available():
-        log.error("Endpoint LLM indisponível (%s). Suba o modelo e rode de novo.",
+        log.error("LLM endpoint unavailable (%s). Start the model and run again.",
                   llm.base_url)
         return 1
 
     max_n = args.max_n or 200
-    log.info("Analisando %d emails da conta '%s' (só remetente/assunto)...",
-             max_n, conta)
+    log.info("Analyzing %d emails of account '%s' (sender/subject only)...",
+             max_n, account)
     metas = sugestor.sample(gmail, max_n)
     try:
         sugestoes = sugestor.suggest(metas, cat, llm, log=log)
     except LLMUnavailable as e:
-        log.error("LLM caiu durante a análise (%s). Rode de novo.", e)
+        log.error("LLM went down during the analysis (%s). Run again.", e)
         return 1
     if not sugestoes:
-        log.info("Nenhuma categoria nova a sugerir — as atuais já cobrem a caixa.")
+        log.info("No new category to suggest — the current ones already cover the mailbox.")
         return 0
 
-    path = sugestor.save_json(conta, LOGS_DIR, sugestoes)
+    path = sugestor.save_json(account, LOGS_DIR, sugestoes)
     if sugestor.interativo():
         accepted = sugestor._checkbox_prompt(sugestoes)
         if not accepted:
-            log.info("Nenhuma aceita. Sugestões ficaram salvas em %s "
-                     "(aceite depois com --aceitar).", path)
+            log.info("None accepted. Suggestions saved to %s "
+                     "(accept later with --aceitar).", path)
             return 0
         sugestor.apply_accepts(categorias_path, accepted)
-        log.info("✅ %d categoria(s) adicionada(s): %s",
+        log.info("✅ %d category(ies) added: %s",
                  len(accepted), ", ".join(a["nome"] for a in accepted))
     else:
-        # Sem TTY (front/automação): só publica o JSON.
+        # No TTY (front-end/automation): just publish the JSON.
         print(json.dumps({"sugestoes": sugestoes}, ensure_ascii=False, indent=2))
-        log.info("Sugestões salvas em %s. Aceite com: --conta %s --aceitar '1,2'",
-                 path, conta)
+        log.info("Suggestions saved to %s. Accept with: --account %s --aceitar '1,2'",
+                 path, account)
     return 0
 
 
 def main(argv=None) -> int:
-    global MODO_SOMBRA
-    ap = argparse.ArgumentParser(prog="polaris", description="Triagem de Gmail com LLM.")
-    ap.add_argument("--conta", default=None,
-                    help="qual conta processar (config/<conta>/). Omitido: TODAS as "
-                         "contas configuradas (no --login: 'principal').")
-    ap.add_argument("--mode", choices=["incremental", "full"], default="incremental")
-    ap.add_argument("--dry-run", action="store_true", help="não aplica nada no Gmail")
+    global SHADOW_MODE
+    ap = argparse.ArgumentParser(prog="polaris", description="Gmail triage with a local LLM.")
+    ap.add_argument("--account", default=None,
+                    help="which account to process (config/<account>/). Omitted: ALL "
+                         "configured accounts (with --login: 'principal').")
+    ap.add_argument("--modo", choices=["incremental", "completo"], default="incremental", dest="modo")
+    ap.add_argument("--dry-run", action="store_true", help="apply nothing to Gmail")
     ap.add_argument("--reprocessar", action="store_true",
-                    help="não pula mensagens já marcadas com Polaris/Processado")
+                    help="do not skip messages already marked Polaris/Processado")
     ap.add_argument("--max", type=int, default=None, dest="max_n",
-                    help="limita quantas mensagens processar")
+                    help="limit how many messages to process")
     ap.add_argument("--login", action="store_true",
-                    help="adiciona/reautentica uma conta (login OAuth) e sai")
-    ap.add_argument("--suggest-categories", action="store_true", dest="suggest",
-                    help="varre uma amostra da conta e sugere categorias novas "
-                         "(interativo no terminal; sem TTY salva JSON) e sai")
+                    help="add/re-authenticate an account (OAuth login) and exit")
+    ap.add_argument("--sugerir-categorias", action="store_true", dest="sugerir",
+                    help="scan a sample of the account and suggest new categories "
+                         "(interactive in the terminal; without a TTY saves JSON) and exit")
     ap.add_argument("--aceitar", default=None, metavar="NUMS",
-                    help="aceita sugestões salvas (logs/<conta>/sugestoes.json): "
-                         "'1,3' ou 'todas'. Usado pelo front / pós --suggest-categories")
+                    help="accept saved suggestions (logs/<account>/sugestoes.json): "
+                         "'1,3' or 'todas'. Used by the front-end / after --sugerir-categorias")
     args = ap.parse_args(argv)
 
     _load_dotenv()
     _setup_logging()
 
     if args.login:
-        return _onboarding(args.conta or CONTA_PADRAO)
+        return _onboarding(args.conta or DEFAULT_ACCOUNT)
 
-    if args.suggest or args.aceitar:
+    if args.sugerir or args.aceitar:
         if not args.conta:
-            log.error("--suggest-categories/--aceitar exigem --conta <nome>.")
+            log.error("--sugerir-categorias/--aceitar require --account <name>.")
             return 1
         return _suggest_categories(args.conta, args)
 
-    # Sem --conta: processa TODAS as contas configuradas (ideal para o timer).
-    contas = [args.conta] if args.conta else configured_profiles()
-    if not contas:
-        log.error("Nenhuma conta configurada. Adicione uma com: "
-                  "python -m src.orquestrador --conta <nome> --login")
+    # Without --account: process ALL configured accounts (ideal for the timer).
+    accounts = [args.conta] if args.conta else configured_profiles()
+    if not accounts:
+        log.error("No account configured. Add one with: "
+                  "python -m src.orquestrador --account <name> --login")
         return 1
-    # Conta pedida explicitamente mas sem login ainda → mensagem clara.
-    faltando = [c for c in contas
+    # Account requested explicitly but not logged in yet -> clear message.
+    missing = [c for c in accounts
                 if not os.path.exists(os.path.join(account_dir_for(c), "token.json"))]
-    if faltando:
-        log.error("Conta(s) sem login: %s. Adicione com: "
-                  "python -m src.orquestrador --conta %s --login",
-                  ", ".join(faltando), faltando[0])
+    if missing:
+        log.error("Account(s) not logged in: %s. Add with: "
+                  "python -m src.orquestrador --account %s --login",
+                  ", ".join(missing), missing[0])
         return 1
 
-    MODO_SOMBRA = _env_bool("MODO_SOMBRA_EXCLUSAO", True)
-    retencao = int(os.environ.get("LOG_RETENCAO_DIAS", "90"))
+    SHADOW_MODE = _env_bool("MODO_SOMBRA_EXCLUSAO", True)
+    retention = int(os.environ.get("LOG_RETENCAO_DIAS", "90"))
 
-    # Lock global contra execução concorrente (timer x execução manual).
+    # Global lock against concurrent runs (timer vs manual run).
     os.makedirs(LOGS_DIR, exist_ok=True)
     lock_fd = open(LOCK_PATH, "w")
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        log.warning("Outra execução do Polaris está em andamento (lock). Saindo.")
+        log.warning("Another Polaris run is in progress (lock). Exiting.")
         return 0
 
     try:
-        # Endpoint LLM é compartilhado entre as contas — checa uma vez só.
+        # The LLM endpoint is shared across accounts — check it once.
         try:
             llm = LLMClient()
         except ValueError as e:
-            log.error("Config do LLM inválida: %s", e)
+            log.error("Invalid LLM config: %s", e)
             return 1
         if not llm.available():
-            log.warning("Endpoint LLM indisponível (%s). Pulando esta execução.",
+            log.warning("LLM endpoint unavailable (%s). Skipping this run.",
                         llm.base_url)
             return 0
 
         rc = 0
-        for conta in contas:
-            rc |= _run_account(conta, args, retencao)
+        for account in accounts:
+            rc |= _run_account(account, args, retention)
         return rc
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)

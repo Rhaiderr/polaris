@@ -128,7 +128,7 @@ DEFAULT_PROMPTS = PromptTemplates(system=_SYSTEM_TMPL, user=_USER_TMPL)
 
 # {lista_categorias} is what tells the model which categories exist — without
 # it the JSON contract can't be satisfied, so an override missing it is rejected.
-_TOKEN_OBRIGATORIO = "{lista_categorias}"
+_REQUIRED_TOKEN = "{lista_categorias}"
 
 _PROMPT_HEADER = """\
 # Polaris — prompt de classificação (editável)
@@ -150,7 +150,7 @@ _PROMPT_HEADER = """\
 """
 
 
-def _bloco_yaml(text: str) -> str:
+def _yaml_block(text: str) -> str:
     """Indent text as a YAML block scalar body (2 spaces; blank lines stay empty)."""
     return "\n".join(f"  {ln}" if ln else "" for ln in text.split("\n"))
 
@@ -160,8 +160,8 @@ def seed_prompt_yaml(path: str) -> None:
     The defaults come straight from the code, so the seeded file never drifts."""
     content = (
         _PROMPT_HEADER
-        + "\nsistema: |-\n" + _bloco_yaml(_SYSTEM_TMPL)
-        + "\n\nusuario: |-\n" + _bloco_yaml(_USER_TMPL) + "\n"
+        + "\nsistema: |-\n" + _yaml_block(_SYSTEM_TMPL)
+        + "\n\nusuario: |-\n" + _yaml_block(_USER_TMPL) + "\n"
     )
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -180,10 +180,10 @@ def load_prompt(path: str) -> PromptTemplates:
         return DEFAULT_PROMPTS
     system = data.get("sistema") or _SYSTEM_TMPL
     user = data.get("usuario") or _USER_TMPL
-    if _TOKEN_OBRIGATORIO not in system:
+    if _REQUIRED_TOKEN not in system:
         _LOGGER.warning(
             "prompt.yaml is missing %s in 'sistema'; using the default system "
-            "prompt so the model still sees the category list", _TOKEN_OBRIGATORIO)
+            "prompt so the model still sees the category list", _REQUIRED_TOKEN)
         system = _SYSTEM_TMPL
     return PromptTemplates(system=str(system), user=str(user))
 

@@ -1,11 +1,11 @@
-"""Cliente LLM — qualquer endpoint OpenAI-compatible (/v1/chat/completions).
+"""LLM client — any OpenAI-compatible endpoint (/v1/chat/completions).
 
-Genérico por design: funciona com LM Studio, Ollama, llama.cpp, vLLM,
-OpenRouter, OpenAI, etc. O código NUNCA menciona um provedor específico —
-tudo vem de LLM_BASE_URL / LLM_MODEL / LLM_API_KEY no ambiente.
+Generic by design: works with LM Studio, Ollama, llama.cpp, vLLM,
+OpenRouter, OpenAI, etc. The code NEVER mentions a specific provider —
+everything comes from LLM_BASE_URL / LLM_MODEL / LLM_API_KEY in the environment.
 
-Sem tool-calling (o contrato é JSON no text — ver classificador), porque
-tool-calling é justamente o que falha em vários modelos locais.
+No tool-calling (the contract is JSON in the text — see classificador), because
+tool-calling is precisely what fails on several local models.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import requests
 
 
 class LLMUnavailable(Exception):
-    """O endpoint não respondeu. O orquestrador trata como 'pular execução'."""
+    """The endpoint did not respond. The orchestrator treats it as 'skip the run'."""
 
 
 class LLMClient:
@@ -38,10 +38,10 @@ class LLMClient:
         self.max_tokens = max_tokens or int(os.environ.get("LLM_MAX_TOKENS", "400"))
         self.timeout = timeout or int(os.environ.get("LLM_TIMEOUT", "120"))
         if not self.base_url or not self.model:
-            raise ValueError("LLM_BASE_URL e LLM_MODEL são obrigatórios (ver .env).")
+            raise ValueError("LLM_BASE_URL and LLM_MODEL are required (see .env).")
 
     def available(self) -> bool:
-        """Ping barato: lista modelos. False se o endpoint não está de pé."""
+        """Cheap ping: list models. False if the endpoint is down."""
         try:
             r = requests.get(f"{self.base_url}/models", headers=self._headers(), timeout=5)
             return r.status_code == 200
@@ -55,10 +55,10 @@ class LLMClient:
         return h
 
     def chat(self, system: str, user: str) -> str:
-        """Uma rodada system+user. Retorna o text da response (bruto).
+        """One system+user round. Returns the raw response text.
 
-        Levanta LLMUnavailable em erro de conexão/timeout — o orquestrador
-        decide pular a execução (o incremental recupera na próxima rodada).
+        Raises LLMUnavailable on connection/timeout error — the orchestrator
+        decides to skip the run (the incremental one catches up next time).
         """
         payload = {
             "model": self.model,

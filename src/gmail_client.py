@@ -1,15 +1,15 @@
-"""Cliente Gmail — escopo gmail.modify apenas (label + archive + trash).
+"""Gmail client — gmail.modify scope only (label + archive + trash).
 
-Responsável por toda conversa com a Gmail API:
-- OAuth (carrega credentials/token; 1º login gera token.json fora do container);
-- sincronização incremental robusta (History API) com bootstrap via getProfile,
-  fallback automático quando o historyId expira (404) e historyTypes=messageAdded
-  (anti-retroalimentação: as próprias ações do Polaris não são reprocessadas);
-- sincronização completa (messages.list paginado);
-- aplicação de labels em lote (batchModify), arquivamento e trash;
-- extração do conteúdo relevante de cada mensagem (headers + corpo).
+Handles all conversation with the Gmail API:
+- OAuth (loads credentials/token; 1st login generates token.json outside the container);
+- robust incremental sync (History API) with bootstrap via getProfile,
+  automatic fallback when the historyId expires (404) and historyTypes=messageAdded
+  (anti-feedback: Polaris' own actions are not reprocessed);
+- full sync (paginated messages.list);
+- batch label application (batchModify), archiving and trash;
+- extraction of the relevant content of each message (headers + body).
 
-Nunca faz delete permanente: exclusão é sempre users.messages.trash.
+Never does a permanent delete: deletion is always users.messages.trash.
 """
 from __future__ import annotations
 
@@ -17,16 +17,16 @@ import base64
 import os
 from dataclasses import dataclass, field
 
-# NB: as bibliotecas do Google são importadas de forma LAZY (dentro dos métodos
-# que as usam). Assim, importar este módulo só para EmailMsg/HistoryExpired
-# (ex.: no sanity check offline tests/dry_run.py) não exige o pacote instalado.
+# NB: the Google libraries are imported LAZILY (inside the methods that use
+# them). So importing this module just for EmailMsg/HistoryExpired
+# (e.g. in the offline sanity check tests/dry_run.py) does not need the package.
 
-# Escopo mínimo: ler + modify (label/archive/trash). NÃO inclui delete nem send.
+# Minimal scope: read + modify (label/archive/trash). NO delete, NO send.
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
-# credentials.json é COMPARTILHADO entre contas: um app OAuth Desktop autoriza
-# quantas contas Google você quiser. O token.json é por-conta (config/<conta>/).
+# credentials.json is SHARED across accounts: one Desktop OAuth app authorizes
+# as many Google accounts as you want. token.json is per-account (config/<account>/).
 CREDENTIALS_PATH = os.path.join(CONFIG_DIR, "credentials.json")
 
 
@@ -62,19 +62,19 @@ class GmailClient:
     @classmethod
     def authenticate_interactive(cls, token_path: str,
                               credentials_path: str = CREDENTIALS_PATH) -> None:
-        """1º login OAuth de uma conta (roda FORA do container, 1 vez).
+        """1st OAuth login of an account (runs OUTSIDE the container, once).
 
-        Grava o token em `token_path` (config/<conta>/token.json). Requer o
-        credentials.json COMPARTILHADO (ver docs/gerar-credenciais-gmail.md).
-        Sobe um servidor local numa porta FIXA (env OAUTH_PORT, default 8765) e
-        NÃO tenta abrir navegador — imprime a URL de consentimento. Assim funciona
-        em máquina headless / via SSH: basta encaminhar a porta
-        (ssh -L PORT:localhost:PORT ...) e abrir a URL no navegador da sua máquina.
+        Writes the token to `token_path` (config/<account>/token.json). Requires
+        the SHARED credentials.json (see docs/gerar-credenciais-gmail.md).
+        Starts a local server on a FIXED port (env OAUTH_PORT, default 8765) and
+        does NOT try to open a browser — it prints the consent URL. This works on a
+        headless machine / over SSH: just forward the port
+        (ssh -L PORT:localhost:PORT ...) and open the URL in your machine's browser.
         """
         from google_auth_oauthlib.flow import InstalledAppFlow
         if not os.path.exists(credentials_path):
             raise FileNotFoundError(
-                f"Falta {credentials_path}. Siga docs/gerar-credenciais-gmail.md."
+                f"Missing {credentials_path}. Follow docs/gerar-credenciais-gmail.md."
             )
         os.makedirs(os.path.dirname(token_path), exist_ok=True)
         port = int(os.environ.get("OAUTH_PORT", "8765"))
@@ -83,8 +83,8 @@ class GmailClient:
             port=port,
             open_browser=False,
             authorization_prompt_message=(
-                "Abra esta URL no navegador da sua máquina "
-                f"(com túnel SSH: ssh -L {port}:localhost:{port} SEU_HOST):\n{{url}}"
+                "Open this URL in your machine's browser "
+                f"(with an SSH tunnel: ssh -L {port}:localhost:{port} YOUR_HOST):\n{{url}}"
             ),
         )
         with open(token_path, "w") as f:
@@ -101,14 +101,14 @@ class GmailClient:
                     f.write(creds.to_json())
             else:
                 raise RuntimeError(
-                    "Sem token OAuth válido. Rode o 1º login: "
-                    "python -m src.orquestrador --conta <nome> --login  (fora do container)."
+                    "No valid OAuth token. Run the 1st login: "
+                    "python -m src.orquestrador --conta <name> --login  (outside the container)."
                 )
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
-    # --------------------------------------------------------------- perfil
+    # --------------------------------------------------------------- profile
     def get_profile(self) -> dict:
-        """messagesTotal + historyId atual (usado no bootstrap e diagnóstico)."""
+        """messagesTotal + current historyId (used in bootstrap and diagnostics)."""
         return self.service.users().getProfile(userId="me").execute()
 
     # --------------------------------------------------------------- labels
@@ -119,7 +119,7 @@ class GmailClient:
         return self._labels_cache
 
     def ensure_label(self, nome: str) -> str:
-        """Retorna o id da label, criando-a se não existir (aninhamento por '/')."""
+        """Return the label id, creating it if missing (nesting via '/')."""
         cache = self._load_labels()
         if nome in cache:
             return cache[nome]
@@ -139,14 +139,14 @@ class GmailClient:
         cache[nome] = criada["id"]
         return criada["id"]
 
-    # ---------------------------------------------------- sincronização
+    # ---------------------------------------------------- sync
     def history_added(self, start_history_id: str) -> tuple[list[dict], str | None]:
-        """IDs de mensagens ADICIONADAS desde start_history_id.
+        """IDs of messages ADDED since start_history_id.
 
-        Retorna (lista de {'id','threadId'}, novo_history_id).
-        Levanta HistoryExpired (404) quando o cursor é antigo demais — o
-        chamador cai no fallback messages.list (ver orquestrador).
-        historyTypes=messageAdded evita reprocessar as ações do próprio Polaris.
+        Returns (list of {'id','threadId'}, new_history_id).
+        Raises HistoryExpired (404) when the cursor is too old — the
+        caller falls back to messages.list (see orquestrador).
+        historyTypes=messageAdded avoids reprocessing Polaris' own actions.
         """
         from googleapiclient.errors import HttpError
         msgs: dict[str, dict] = {}
@@ -169,7 +169,7 @@ class GmailClient:
                 for h in resp.get("history", []):
                     for ma in h.get("messagesAdded", []):
                         m = ma["message"]
-                        # ignora rascunhos/enviados e a própria Lixeira
+                        # ignore drafts/sent and Polaris' own Trash
                         labels = m.get("labelIds", [])
                         if "DRAFT" in labels or "SENT" in labels or "TRASH" in labels:
                             continue
@@ -184,7 +184,7 @@ class GmailClient:
         return list(msgs.values()), novo_hid
 
     def messages_list(self, query: str, max_results: int | None = None) -> list[dict]:
-        """messages.list paginado. Retorna [{'id','threadId'}]. query no estilo Gmail."""
+        """Paginated messages.list. Returns [{'id','threadId'}]. Gmail-style query."""
         out: list[dict] = []
         page_token = None
         while True:
@@ -202,10 +202,10 @@ class GmailClient:
                 break
         return out
 
-    # ----------------------------------------------------- leitura de msg
+    # ----------------------------------------------------- message read
     def get_meta(self, msg_id: str) -> dict:
-        """Só remetente/assunto (format=metadata) — barato para varreduras
-        em massa (ex.: sugestão de categorias), sem baixar o corpo."""
+        """Sender/subject only (format=metadata) — cheap for bulk scans
+        (e.g. category suggestion), without downloading the body."""
         raw = (
             self.service.users()
             .messages()
@@ -229,7 +229,7 @@ class GmailClient:
         return self._parse_email(raw)
 
     def count_thread_messages(self, thread_id: str) -> int:
-        """Nº de mensagens na thread (regra: arquivar/trash só em thread única)."""
+        """Number of messages in the thread (rule: archive/trash only on single thread)."""
         t = (
             self.service.users()
             .threads()
@@ -257,7 +257,7 @@ class GmailClient:
 
     @staticmethod
     def _extract_body(payload: dict, limite: int = 4000) -> str:
-        """Extrai text de text/plain (preferido) ou text/html, recursivo em multipart."""
+        """Extract text from text/plain (preferred) or text/html, recursive in multipart."""
         def decode(data: str) -> str:
             return base64.urlsafe_b64decode(data.encode()).decode("utf-8", "replace")
 
@@ -281,7 +281,7 @@ class GmailClient:
             return decode(body["data"])[:limite]
         return ""
 
-    # -------------------------------------------------------- modificações
+    # -------------------------------------------------------- modifications
     def modify(
         self, msg_id: str, add: list[str] | None = None, remove: list[str] | None = None
     ) -> None:
@@ -294,7 +294,7 @@ class GmailClient:
     def batch_modify(
         self, ids: list[str], add: list[str] | None = None, remove: list[str] | None = None
     ) -> None:
-        """Aplica as MESMAS labels a vários ids de uma vez (economiza chamadas)."""
+        """Apply the SAME labels to several ids at once (saves calls)."""
         if not ids:
             return
         for i in range(0, len(ids), 1000):  # limite da API: 1000 ids por chamada
@@ -308,9 +308,9 @@ class GmailClient:
             ).execute()
 
     def trash(self, msg_id: str) -> None:
-        """Manda para a Lixeira (recuperável ~30 dias). NUNCA delete permanente."""
+        """Send to Trash (recoverable ~30 days). NEVER permanent delete."""
         self.service.users().messages().trash(userId="me", id=msg_id).execute()
 
 
 class HistoryExpired(Exception):
-    """startHistoryId antigo demais (Gmail retornou 404). Chamador usa fallback."""
+    """startHistoryId too old (Gmail returned 404). Caller uses a fallback."""

@@ -1,17 +1,17 @@
-"""Sugestor de categorias — varre uma amostra da caixa e propõe novas categorias.
+"""Category suggestor — scans a sample of the mailbox and proposes new categories.
 
-Fluxo (pensado para virar tela de onboarding no futuro front/add-on):
- 1. amostra os emails mais recentes da conta (só remetente/assunto — barato);
- 2. manda lotes para o LLM local propor categorias NOVAS (não repete as atuais);
- 3. consolida as sugestões entre lotes (nome normalizado + contagem);
- 4. apresenta a lista para o usuário aceitar:
-      - terminal interativo → checkboxes por número ("1,3,5" / "todos");
-      - sem TTY (ou --json)  → imprime JSON e salva em logs/<conta>/sugestoes.json
-        (é este JSON que um front-end consome; o aceite vem depois via --aceitar).
- 5. as accepted entram no config/<conta>/categorias.yaml com defaults seguros
-    (permitir_exclusao: false — exclusão é decisão explícita do usuário).
+Flow (designed to become an onboarding screen in a future front-end/add-on):
+ 1. sample the account's most recent emails (sender/subject only — cheap);
+ 2. send batches to the local LLM to propose NEW categories (never repeats the current ones);
+ 3. consolidate suggestions across batches (normalized name + count);
+ 4. present the list for the user to accept:
+      - interactive terminal → checkboxes by number ("1,3,5" / "all");
+      - no TTY (or --json)  → prints JSON and saves it to logs/<account>/sugestoes.json
+        (a front-end consumes this JSON; the acceptance comes later via --aceitar).
+ 5. accepted ones go into config/<account>/categorias.yaml with safe defaults
+    (permitir_exclusao: false — deletion is an explicit user decision).
 
-O passo 5 nunca sobrescreve nada: faz backup .bak e só ADICIONA categorias.
+Step 5 never overwrites anything: it makes a .bak backup and only ADDS categories.
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ Responda apenas o JSON."""
 
 # ------------------------------------------------------------------ helpers
 def _normalize(nome: str) -> str:
-    """Chave de deduplicação entre lotes: minúsculo, sem acento/pontuação."""
+    """Cross-batch dedup key: lowercase, accents/punctuation stripped."""
     import unicodedata
     s = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
@@ -66,9 +66,9 @@ def _tokens(nome: str) -> frozenset[str]:
 
 
 def _matches_existing(nome: str, existing: list[str]) -> bool:
-    """Guarda determinística contra quase-duplicatas que o LLM insiste em propor
-    ('Promoções e Ofertas' com 'Promoções' existente): se os tokens de um lado
-    estão contidos no outro, é a mesma categoria com outro nome."""
+    """Deterministic guard against near-duplicates the LLM insists on proposing
+    ('Promoções e Ofertas' when 'Promoções' exists): if one side's tokens
+    are contained in the other, it is the same category under another name."""
     ts = _tokens(nome)
     if not ts:
         return True
@@ -95,16 +95,16 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-# ------------------------------------------------------------------ núcleo
+# ------------------------------------------------------------------ core
 def sample(gmail: GmailClient, max_n: int) -> list[dict]:
-    """Metadados (remetente/assunto) dos emails mais recentes, sem corpo."""
+    """Metadata (sender/subject) of the most recent emails, no body."""
     pairs = gmail.messages_list("-in:chats", max_results=max_n)
     return [gmail.get_meta(p["id"]) for p in pairs]
 
 
 def suggest(metas: list[dict], cat: Catalog, llm: LLMClient,
             log=None) -> list[dict]:
-    """Roda os lotes no LLM e consolida. Retorna [{'nome','descricao','quantos'}]."""
+    """Run the batches through the LLM and consolidate. Returns [{'nome','descricao','quantos'}]."""
     existing = ", ".join(n for n in cat.names)
     consolidado: dict[str, dict] = {}
     total_batches = (len(metas) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -119,7 +119,7 @@ def suggest(metas: list[dict], cat: Catalog, llm: LLMClient,
         response = llm.chat(system, user)   # LLMUnavailable sobe ao chamador
         obj = _extract_json(response) or {}
         if log:
-            log.info("Sugestor: batch %d/%d → %d sugestão(ões)",
+            log.info("Suggestor: batch %d/%d → %d suggestion(s)",
                      i // BATCH_SIZE + 1, total_batches,
                      len(obj.get("sugestoes", [])))
         for s in obj.get("sugestoes", []):
@@ -127,8 +127,8 @@ def suggest(metas: list[dict], cat: Catalog, llm: LLMClient,
             if not nome:
                 continue
             key = _normalize(nome)
-            # não sugerir o que já existe (dupla checagem determinística,
-            # incl. quase-duplicatas tipo "Promoções e Ofertas" vs "Promoções")
+            # never suggest what already exists (deterministic double-check,
+            # incl. near-duplicates like "Promoções e Ofertas" vs "Promoções")
             if not key or _matches_existing(nome, cat.names):
                 continue
             try:
@@ -146,12 +146,12 @@ def suggest(metas: list[dict], cat: Catalog, llm: LLMClient,
     return sorted(consolidado.values(), key=lambda s: -s["quantos"])
 
 
-# ------------------------------------------------------------------ aceite
+# ------------------------------------------------------------------ acceptance
 def apply_accepts(categorias_path: str, accepted: list[dict]) -> None:
-    """ADICIONA as categorias accepted ao categorias.yaml (nunca remove/edita).
+    """ADDS the accepted categories to categorias.yaml (never removes/edits).
 
-    Defaults seguros: permitir_exclusao=false (exclusão é decisão explícita).
-    Faz backup .bak antes de escrever.
+    Safe defaults: permitir_exclusao=false (trashing is an explicit decision).
+    Writes a .bak backup first.
     """
     with open(categorias_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -174,12 +174,12 @@ def apply_accepts(categorias_path: str, accepted: list[dict]) -> None:
 
 
 def _checkbox_prompt(sugestoes: list[dict]) -> list[dict]:
-    """Aceite interativo no terminal (equivalente CLI dos checkboxes do front)."""
-    print("\nSugestões de novas categorias:")
+    """Interactive terminal acceptance (CLI equivalent of the front-end checkboxes)."""
+    print("\nNew category suggestions:")
     for i, s in enumerate(sugestoes, 1):
         print(f"  [{i}] {s['nome']} (~{s['quantos']} emails) — {s['descricao']}")
-    print("\nQuais aceitar? Números separados por vírgula (ex.: 1,3), "
-          "'todos' ou Enter para nenhuma.")
+    print("\nWhich to accept? Numbers separated by commas (e.g. 1,3), "
+          "'todos'/'all' or Enter for none.")
     escolha = input("> ").strip().lower()
     if not escolha:
         return []
@@ -194,7 +194,7 @@ def _checkbox_prompt(sugestoes: list[dict]) -> list[dict]:
 
 
 def save_json(conta: str, logs_dir: str, sugestoes: list[dict]) -> str:
-    """Persiste as sugestões para consumo posterior (front-end / --aceitar)."""
+    """Persist the suggestions for later consumption (front-end / --aceitar)."""
     out_dir = os.path.join(logs_dir, conta)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "sugestoes.json")
@@ -212,7 +212,7 @@ def load_json(conta: str, logs_dir: str) -> list[dict]:
     path = os.path.join(logs_dir, conta, "sugestoes.json")
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"{path} não existe. Rode antes: --conta {conta} --suggest-categories"
+            f"{path} does not exist. Run first: --conta {conta} --sugerir-categorias"
         )
     with open(path, encoding="utf-8") as f:
         return json.load(f).get("sugestoes", [])

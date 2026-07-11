@@ -1,18 +1,19 @@
-"""Classificador — monta o prompt, chama o LLM e valida o contrato JSON.
+"""Classifier — builds the prompt, calls the LLM and validates the JSON contract.
 
-Contrato de retorno (estrito):
-  {"categoria": <da lista>, "arquivar": bool, "excluir": bool,
-   "confianca": 0.0-1.0, "motivo": "<frase curta>"}
+Strict return contract:
+  {"categoria": <from the list>, "arquivar": bool, "excluir": bool,
+   "confianca": 0.0-1.0, "motivo": "<short sentence>"}
 
-- A lista de categorias é montada DINAMICAMENTE do categorias.yaml (trocar
-  categorias não exige mexer aqui).
-- O corpo do email é ENTRADA NÃO CONFIÁVEL: fica delimitado por marcadores e o
-  sistema instrui o modelo a jamais obedecer instruções vindas de dentro dele
-  (defesa contra prompt injection).
-- JSON inválido / categoria fora da lista / confiança ausente → cai em Revisar.
-- Os templates abaixo são os PADRÕES: cada conta pode sobrescrevê-los via
-  prompt.yaml (ver load_prompt / seed_prompt_yaml) para calibrar o modelo
-  ao seu próprio caso de uso.
+- The category list is built DYNAMICALLY from categorias.yaml (changing
+  categories needs no code changes here).
+- The email body is UNTRUSTED INPUT: it is fenced by markers and the system
+  prompt instructs the model to never obey instructions coming from inside it
+  (prompt-injection defense).
+- Invalid JSON / category not in the list / missing confidence → falls back to
+  the Review category.
+- The templates below are the DEFAULTS: each account can override them via
+  prompt.yaml (see load_prompt / seed_prompt_yaml) to regulate the model for
+  its own use case.
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ from .llm_client import LLMClient
 log = logging.getLogger("polaris")
 
 
-# ------------------------------------------------------------------ catálogo
+# ------------------------------------------------------------------ catalog
 @dataclass
 class Catalog:
     names: list[str]
@@ -112,20 +113,20 @@ List-Unsubscribe presente: {unsub}
 Responda apenas o JSON."""
 
 
-# --------------------------------------------- prompt editável pelo usuário
+# --------------------------------------------- user-editable prompt
 @dataclass
 class PromptTemplates:
-    """As duas metades do prompt. O usuário pode sobrescrevê-las via prompt.yaml
-    para calibrar o modelo à sua própria caixa sem mexer no código."""
+    """The two prompt halves. Users may override them via prompt.yaml to
+    regulate the model for their own mailbox without touching code."""
     system: str
     user: str
 
 
 DEFAULT_PROMPTS = PromptTemplates(system=_SYSTEM_TMPL, user=_USER_TMPL)
 
-# {lista_categorias} é o que informa ao modelo quais categorias existem — sem
-# ele o contrato JSON não fecha, então um override sem esse token é rejeitado.
-_TOKEN_OBRIGATORIO = "{lista_categorias}"
+# {lista_categorias} tells the model which categories exist — without it the
+# JSON contract cannot be satisfied, so an override missing it is rejected.
+_REQUIRED_TOKEN = "{lista_categorias}"
 
 _PROMPT_HEADER = """\
 # Polaris — prompt de classificação (editável)
@@ -147,47 +148,47 @@ _PROMPT_HEADER = """\
 """
 
 
-def _bloco_yaml(text: str) -> str:
-    """Indenta o text como corpo de bloco YAML (2 espaços; lines vazias ficam vazias)."""
+def _yaml_block(text: str) -> str:
+    """Indent text as a YAML block scalar body (2 spaces; blank lines stay empty)."""
     return "\n".join(f"  {ln}" if ln else "" for ln in text.split("\n"))
 
 
 def seed_prompt_yaml(path: str) -> None:
-    """Escreve prompt.yaml com os padrões atuais para o usuário ver e editar.
-    Os padrões vêm do código, então o arquivo semeado nunca desatualiza."""
+    """Write prompt.yaml with the current defaults so the user can see and edit it.
+    The defaults come from the code, so the seeded file never drifts."""
     content = (
         _PROMPT_HEADER
-        + "\nsistema: |-\n" + _bloco_yaml(_SYSTEM_TMPL)
-        + "\n\nusuario: |-\n" + _bloco_yaml(_USER_TMPL) + "\n"
+        + "\nsistema: |-\n" + _yaml_block(_SYSTEM_TMPL)
+        + "\n\nusuario: |-\n" + _yaml_block(_USER_TMPL) + "\n"
     )
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
 
 def load_prompt(path: str) -> PromptTemplates:
-    """Carrega prompt.yaml. Qualquer problema (arquivo ausente, YAML inválido,
-    token obrigatório faltando) cai nos padrões — a classificação nunca quebra."""
+    """Load prompt.yaml. Any problem (missing file, bad YAML, missing required
+    token) falls back to the defaults — classification never breaks."""
     try:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except FileNotFoundError:
         return DEFAULT_PROMPTS
     except (OSError, yaml.YAMLError) as err:
-        log.warning("Não consegui ler prompt.yaml (%s); usando o prompt padrão", err)
+        log.warning("Could not read prompt.yaml (%s); using the default prompt", err)
         return DEFAULT_PROMPTS
     system = data.get("sistema") or _SYSTEM_TMPL
     user = data.get("usuario") or _USER_TMPL
-    if _TOKEN_OBRIGATORIO not in system:
+    if _REQUIRED_TOKEN not in system:
         log.warning(
-            "prompt.yaml sem %s em 'sistema'; usando o sistema padrão para o "
-            "modelo ainda ver a lista de categorias", _TOKEN_OBRIGATORIO)
+            "prompt.yaml missing %s in 'sistema'; using the default system prompt "
+            "so the model still sees the category list", _REQUIRED_TOKEN)
         system = _SYSTEM_TMPL
     return PromptTemplates(system=str(system), user=str(user))
 
 
 def _render(template: str, values: dict[str, str]) -> str:
-    """Preenche {tokens} por substituição simples — tolera YAML editado à mão
-    que contenha outras chaves literais (ao contrário de str.format, que quebra)."""
+    """Fill {tokens} by plain substitution — tolerant of hand-edited YAML that
+    may contain other literal braces (unlike str.format, which would raise)."""
     out = template
     for key, value in values.items():
         out = out.replace("{" + key + "}", value)
