@@ -57,6 +57,14 @@
       "last_run": {
         "name": "Last run"
       }
+    },
+    "button": {
+      "run_incremental": {
+        "name": "Run triage"
+      },
+      "run_full": {
+        "name": "Full scan (backlog)"
+      }
     }
   },
   "services": {

@@ -54,7 +54,7 @@ from .llm_client import LLMIndisponivel
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.BUTTON, Platform.SENSOR]
 
 # One run at a time across ALL accounts (equivalent to the CLI flock):
 # avoids two triage runs competing for the same LLM endpoint.

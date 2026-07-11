@@ -57,6 +57,14 @@
       "last_run": {
         "name": "Última execução"
       }
+    },
+    "button": {
+      "run_incremental": {
+        "name": "Executar triagem"
+      },
+      "run_full": {
+        "name": "Varredura completa (backlog)"
+      }
     }
   },
   "services": {
