@@ -59,6 +59,7 @@ class MotorConfig:
     usar_labels_gmail: bool = True   # merge the account's real Gmail labels as categories
     report_dir: str = ""      # /config/www/polaris (for the servable HTML report)
     report_token: str = ""    # unguessable filename component for the report
+    webhook_url: str = ""     # /api/webhook/<id> for one-click accept from the report
 
 
 def prepare_account_dir(account_dir: str) -> None:
@@ -361,8 +362,11 @@ def executar(access_token: str, cfg: MotorConfig, mode: str) -> dict:
     return motor.stats
 
 
-def rodar_sugestor(access_token: str, cfg: MotorConfig, max_n: int) -> list[dict]:
-    """Sample the mailbox and return category suggestions (saved in account_dir)."""
+def rodar_sugestor(access_token: str, cfg: MotorConfig, max_n: int) -> dict:
+    """Sample the mailbox, suggest NEW categories, and preview where each
+    sampled email would land (existing + suggested). Writes an interactive
+    HTML report (checkboxes + one-click accept via webhook). Returns
+    {suggestions, report_link}."""
     from . import sugestor
 
     gmail = GmailClient(access_token)
@@ -374,7 +378,21 @@ def rodar_sugestor(access_token: str, cfg: MotorConfig, max_n: int) -> list[dict
     metas = sugestor.amostrar(gmail, max_n)
     sugestoes = sugestor.sugerir(metas, cat, llm, log=_LOGGER)
     sugestor.salvar_json(cfg.account_dir, sugestoes)
-    return sugestoes
+
+    # 2nd pass: map each sampled email into existing + suggested categories
+    nomes = list(cat.nomes) + [s["nome"] for s in sugestoes]
+    descr = dict(cat.descricoes)
+    for s in sugestoes:
+        descr[s["nome"]] = s.get("descricao", "")
+    distribuicao = sugestor.distribuir(metas, nomes, descr, cat.revisar,
+                                       llm, log=_LOGGER)
+    sugeridas = {s["nome"] for s in sugestoes}
+    link = None
+    try:
+        link = _escrever_sugestoes_html(cfg, sugestoes, distribuicao, sugeridas)
+    except Exception:  # noqa: BLE001 — report is best-effort
+        _LOGGER.exception("Failed to write the suggestions report")
+    return {"suggestions": sugestoes, "report_link": link}
 
 
 def aceitar_sugestoes(account_dir: str, numbers: str,
@@ -663,6 +681,134 @@ def _html_relatorio(doc: dict) -> str:
 <div class="meta">Execução {modo} · {quando} UTC · {_esc(len(itens))} e-mails</div></header>
 <main>{banner}<div class="chips">{chips}</div>{controles}{corpo}</main>
 <script>{_REPORT_JS}</script>
+</body></html>"""
+
+
+# ---------------------------------------------------------- suggestions report
+_SUGGEST_CSS = """
+.intro{color:#6b7484;margin:6px 0 14px}
+.bar{position:sticky;top:0;background:#f5f6f8;padding:12px 0;z-index:5;
+display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+@media(prefers-color-scheme:dark){.bar{background:#12151a}}
+section.sug h2{background:#f5f0ff}
+@media(prefers-color-scheme:dark){section.sug h2{background:#241b3a!important}}
+section.sug{border-color:#c4b5fd}
+h2 label{display:inline-flex;gap:8px;align-items:center;cursor:pointer;font-weight:700}
+h2 label input{width:17px;height:17px}
+.desc{color:#6b7484;font-size:13px;padding:0 16px 4px}
+details{background:#fff;border:1px solid #e3e6ec;border-radius:10px;margin:8px 0;padding:2px 14px}
+@media(prefers-color-scheme:dark){details{background:#1b2028;border-color:#2a313c}}
+summary{cursor:pointer;font-weight:600;padding:8px 0;font-size:14px}
+#accmsg{font-weight:600;color:#2f855a}
+"""
+
+_SUGGEST_JS = """
+(function(){
+  var btn=document.getElementById('accept'), msg=document.getElementById('accmsg');
+  if(!btn)return;
+  btn.addEventListener('click',function(){
+    var nums=[].slice.call(document.querySelectorAll('.acc:checked')).map(function(c){return c.value;});
+    if(!nums.length){msg.textContent='Selecione ao menos uma categoria.';return;}
+    btn.disabled=true; btn.textContent='Criando…'; msg.textContent='';
+    fetch(WEBHOOK,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({numbers:nums.join(',')})})
+    .then(function(r){return r.json().catch(function(){return{};});})
+    .then(function(j){
+      var add=(j&&j.added&&j.added.length)?j.added.join(', '):nums.join(', ');
+      msg.textContent='✅ Criado no Gmail: '+add; btn.textContent='Aceito ✓';
+    }).catch(function(e){
+      btn.disabled=false; btn.textContent='Aceitar selecionadas';
+      msg.textContent='Erro ao aceitar: '+e;
+    });
+  });
+})();
+"""
+
+
+def _escrever_sugestoes_html(cfg: MotorConfig, sugestoes: list[dict],
+                            distribuicao: list[dict], sugeridas: set) -> str | None:
+    if not cfg.report_dir or not cfg.report_token:
+        return None
+    os.makedirs(cfg.report_dir, exist_ok=True)
+    nome = f"suggest-{cfg.report_token}.html"
+    doc = {
+        "conta": os.path.basename(cfg.account_dir),
+        "gerado_em": _now_iso(),
+        "sugestoes": sugestoes,
+        "distribuicao": distribuicao,
+        "sugeridas": sugeridas,
+        "webhook_url": cfg.webhook_url,
+    }
+    with open(os.path.join(cfg.report_dir, nome), "w", encoding="utf-8") as f:
+        f.write(_html_sugestoes(doc))
+    return f"/local/polaris/{nome}"
+
+
+def _tabela_emails(itens: list[dict]) -> str:
+    trs = "".join(
+        f"<tr><td class='sub'>{_esc(m.get('assunto')) or '—'}</td>"
+        f"<td>{_esc(m.get('remetente'))}</td></tr>"
+        for m in itens)
+    return ("<table><thead><tr><th>Assunto</th><th>Remetente</th></tr></thead>"
+            f"<tbody>{trs}</tbody></table>")
+
+
+def _html_sugestoes(doc: dict) -> str:
+    conta = _esc(doc["conta"])
+    quando = _esc(doc["gerado_em"][:19].replace("T", " "))
+    sugestoes = doc["sugestoes"]
+    sugeridas = doc["sugeridas"]
+    porcat: dict[str, list] = {}
+    for m in doc["distribuicao"]:
+        porcat.setdefault(m.get("categoria", "Revisar"), []).append(m)
+
+    secoes_sug = []
+    for i, s in enumerate(sugestoes, 1):
+        nome = s["nome"]
+        itens = porcat.get(nome, [])
+        secoes_sug.append(
+            f"<section class='sug'><h2><label>"
+            f"<input class='acc' type='checkbox' value='{i}' checked> ✨ {_esc(nome)}"
+            f"</label> <span class='n'>{len(itens)}</span></h2>"
+            f"<p class='desc'>{_esc(s.get('descricao',''))}</p>"
+            + (_tabela_emails(itens) if itens else
+               "<p class='desc'>Nenhum e-mail da amostra caiu aqui — o modelo "
+               "propôs pelo tema geral.</p>")
+            + "</section>")
+
+    existentes = []
+    for nome in sorted(porcat):
+        if nome in sugeridas:
+            continue
+        itens = porcat[nome]
+        existentes.append(
+            f"<details><summary>{_esc(nome)} <span class='n'>{len(itens)}</span>"
+            f"</summary>{_tabela_emails(itens)}</details>")
+
+    tem_wh = bool(doc["webhook_url"])
+    barra = (
+        '<div class="bar"><button id="accept" class="btn">Aceitar selecionadas'
+        '</button><span id="accmsg"></span></div>' if tem_wh else
+        '<div class="msg">As sugestões estão pré-marcadas. Aceite chamando o '
+        'serviço <code>polaris.accept_categories</code> com os números.</div>')
+    wh_js = (f"var WEBHOOK={doc['webhook_url']!r};{_SUGGEST_JS}"
+             if tem_wh else "")
+    return f"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polaris — sugestões {conta}</title>
+<style>{_REPORT_CSS}{_SUGGEST_CSS}</style></head><body>
+<header><h1>💡 Polaris — sugestões de categorias</h1>
+<div class="meta">{conta} · {quando} UTC · {len(sugestoes)} sugestão(ões)</div></header>
+<main>
+<p class="intro">Marque as categorias novas que quer criar e clique em aceitar —
+as labels são criadas no seu Gmail na hora. Abaixo, o que cairia em cada uma
+(e nas categorias que você já tem).</p>
+{barra}
+{''.join(secoes_sug) or '<p>Nenhuma categoria nova a sugerir — as atuais já cobrem a amostra.</p>'}
+<h2 style="margin-top:24px">Distribuição nas categorias existentes</h2>
+{''.join(existentes) or '<p class="desc">—</p>'}
+</main>
+<script>{wh_js}</script>
 </body></html>"""
 
 

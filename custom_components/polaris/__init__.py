@@ -11,10 +11,11 @@ import asyncio
 import logging
 import os
 
+from aiohttp import web
 from aiohttp.client_exceptions import ClientError, ClientResponseError
 import voluptuous as vol
 
-from homeassistant.components import persistent_notification
+from homeassistant.components import persistent_notification, webhook
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
@@ -92,6 +93,8 @@ class PolarisAccount:
         self.account_dir: str = hass.config.path(DOMAIN, self.email)
         self.report_dir: str = hass.config.path("www", DOMAIN)
         self.report_token: str = ""
+        self.webhook_id: str = ""
+        self.webhook_url: str = ""
         self.last_stats: dict | None = None
         # state set by the UI control entities (select/switch) for the button
         self.ui_mode: str = MODE_INCREMENTAL
@@ -112,6 +115,14 @@ class PolarisAccount:
             self.report_token = secrets.token_urlsafe(12)
             with open(tok_path, "w", encoding="utf-8") as f:
                 f.write(self.report_token)
+        wh_path = os.path.join(self.account_dir, ".webhook_id")
+        if os.path.exists(wh_path):
+            self.webhook_id = open(wh_path, encoding="utf-8").read().strip()
+        if not self.webhook_id:
+            self.webhook_id = f"polaris_{secrets.token_hex(16)}"
+            with open(wh_path, "w", encoding="utf-8") as f:
+                f.write(self.webhook_id)
+        self.webhook_url = f"/api/webhook/{self.webhook_id}"
         os.makedirs(self.report_dir, exist_ok=True)
 
     def schedule(self) -> None:
@@ -158,6 +169,7 @@ class PolarisAccount:
             usar_labels_gmail=o.get(CONF_USE_GMAIL_LABELS, True),
             report_dir=self.report_dir,
             report_token=self.report_token,
+            webhook_url=self.webhook_url,
         )
 
     def _endpoint_configured(self) -> bool:
@@ -253,7 +265,7 @@ class PolarisAccount:
             token = await self._token()
             cfg = self._cfg()
             try:
-                sugestoes = await self.hass.async_add_executor_job(
+                res = await self.hass.async_add_executor_job(
                     motor.rodar_sugestor, token, cfg, max_n)
             except LLMIndisponivel as err:
                 persistent_notification.async_create(
@@ -263,24 +275,28 @@ class PolarisAccount:
                     title="Polaris — suggestor",
                     notification_id=f"polaris_suggest_{self.entry.entry_id}")
                 return
+        sugestoes = res.get("suggestions") or []
+        link = res.get("report_link")
         if not sugestoes:
             corpo = (f"Account **{self.email}**: nothing new to suggest — "
                      "the current categories already cover the mailbox.")
         else:
-            linhas = "\n".join(
-                f"{i}. **{s['nome']}** (~{s['quantos']} emails) — {s['descricao']}"
-                for i, s in enumerate(sugestoes, 1))
+            nomes = ", ".join(s["nome"] for s in sugestoes)
             corpo = (
-                f"Suggestions for **{self.email}**:\n\n{linhas}\n\n"
-                "To accept, call the `polaris.accept_categories` service "
-                f"with account `{self.email}` and numbers (e.g. `1,3` or "
-                "`all`)."
+                f"Account **{self.email}**: {len(sugestoes)} new category(ies) "
+                f"suggested — {nomes}."
             )
+            if link:
+                corpo += (f"\n\n📄 [Open the report to review what goes where and "
+                          f"accept with one click]({link})")
+            else:
+                corpo += ("\n\nAccept with the `polaris.accept_categories` "
+                          "service (numbers, e.g. `1,3` or `all`).")
         persistent_notification.async_create(
             self.hass, corpo, title="Polaris — category suggestions",
             notification_id=f"polaris_suggest_{self.entry.entry_id}")
 
-    async def async_accept(self, numbers: str) -> None:
+    async def async_accept(self, numbers: str) -> list[str]:
         token = await self._token()   # autonomy: create the Gmail labels now
         nomes = await self.hass.async_add_executor_job(
             motor.aceitar_sugestoes, self.account_dir, numbers, token)
@@ -290,6 +306,31 @@ class PolarisAccount:
         persistent_notification.async_create(
             self.hass, corpo, title="Polaris — categories",
             notification_id=f"polaris_suggest_{self.entry.entry_id}")
+        return nomes
+
+
+# ---------------------------------------------------------------- webhook
+async def _handle_webhook(hass: HomeAssistant, webhook_id: str,
+                         request: web.Request) -> web.Response:
+    """One-click accept from the suggestions report. Body: {"numbers": "1,3"}."""
+    account = next((d for d in hass.data.get(DOMAIN, {}).values()
+                    if isinstance(d, PolarisAccount)
+                    and d.webhook_id == webhook_id), None)
+    if account is None:
+        return web.json_response({"ok": False, "error": "unknown"}, status=404)
+    try:
+        data = await request.json()
+    except ValueError:
+        data = dict(await request.post())
+    numbers = str((data or {}).get("numbers", "")).strip()
+    if not numbers:
+        return web.json_response({"ok": False, "error": "no numbers"}, status=400)
+    try:
+        added = await account.async_accept(numbers)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Webhook accept failed")
+        return web.json_response({"ok": False, "error": "internal"}, status=500)
+    return web.json_response({"ok": True, "added": added})
 
 
 # ---------------------------------------------------------------- services
@@ -353,6 +394,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.async_add_executor_job(account.prepare)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = account
 
+    try:
+        webhook.async_register(hass, DOMAIN, f"Polaris {account.email}",
+                               account.webhook_id, _handle_webhook)
+    except ValueError:
+        pass  # already registered (reload)
+
     _register_services(hass)
     account.schedule()
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
@@ -370,4 +417,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.entry_id, None)
     if account:
         account.cancel_schedule()
+        if account.webhook_id:
+            webhook.async_unregister(hass, account.webhook_id)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
