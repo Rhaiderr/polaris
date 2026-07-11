@@ -39,6 +39,7 @@ from .const import (
     CONF_SCHEDULE_ENABLED,
     CONF_SCHEDULE_TIME,
     CONF_SHADOW_MODE,
+    CONF_USE_GMAIL_LABELS,
     DEFAULT_MAX_PER_RUN,
     DEFAULT_SCHEDULE_TIME,
     DOMAIN,
@@ -54,7 +55,8 @@ from .llm_client import LLMIndisponivel
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS = [Platform.BUTTON, Platform.NUMBER, Platform.SELECT,
+             Platform.SENSOR, Platform.SWITCH]
 
 # One run at a time across ALL accounts (equivalent to the CLI flock):
 # avoids two triage runs competing for the same LLM endpoint.
@@ -94,6 +96,7 @@ class PolarisAccount:
         # state set by the UI control entities (select/switch) for the button
         self.ui_mode: str = MODE_INCREMENTAL
         self.ui_dry_run: bool = False
+        self.ui_suggest_n: int = 120
         self._unsub_schedule = None
 
     # ------------------------------------------------------------- setup
@@ -152,6 +155,7 @@ class PolarisAccount:
             reprocess=reprocess,
             max_n=max_n if max_n is not None
             else int(o.get(CONF_MAX_PER_RUN, DEFAULT_MAX_PER_RUN)),
+            usar_labels_gmail=o.get(CONF_USE_GMAIL_LABELS, True),
             report_dir=self.report_dir,
             report_token=self.report_token,
         )
@@ -277,10 +281,11 @@ class PolarisAccount:
             notification_id=f"polaris_suggest_{self.entry.entry_id}")
 
     async def async_accept(self, numbers: str) -> None:
+        token = await self._token()   # autonomy: create the Gmail labels now
         nomes = await self.hass.async_add_executor_job(
-            motor.aceitar_sugestoes, self.account_dir, numbers)
+            motor.aceitar_sugestoes, self.account_dir, numbers, token)
         corpo = (f"Account **{self.email}**: {len(nomes)} category(ies) "
-                 f"added: {', '.join(nomes)}." if nomes
+                 f"added and created in Gmail: {', '.join(nomes)}." if nomes
                  else f"Account **{self.email}**: nothing to accept.")
         persistent_notification.async_create(
             self.hass, corpo, title="Polaris — categories",

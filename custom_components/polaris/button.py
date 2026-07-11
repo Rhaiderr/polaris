@@ -19,7 +19,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     account = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([RunButton(account, entry)])
+    async_add_entities([RunButton(account, entry), SuggestButton(account, entry)])
 
 
 class RunButton(ButtonEntity):
@@ -40,3 +40,25 @@ class RunButton(ButtonEntity):
     async def async_press(self) -> None:
         await self._account.async_run_triage(
             mode=self._account.ui_mode, dry_run=self._account.ui_dry_run)
+
+
+class SuggestButton(ButtonEntity):
+    """Runs the local model over N recent emails (the Sample number) to
+    suggest new categories/labels; the result comes as a notification."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "suggest"
+    _attr_icon = "mdi:lightbulb-on-outline"
+
+    def __init__(self, account, entry: ConfigEntry) -> None:
+        self._account = account
+        self._attr_unique_id = f"{entry.entry_id}_suggest"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=f"Polaris {account.email}",
+            manufacturer="Polaris",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    async def async_press(self) -> None:
+        await self._account.async_suggest(self._account.ui_suggest_n)

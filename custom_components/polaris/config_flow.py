@@ -25,6 +25,7 @@ from .const import (
     CONF_SCHEDULE_ENABLED,
     CONF_SCHEDULE_TIME,
     CONF_SHADOW_MODE,
+    CONF_USE_GMAIL_LABELS,
     DEFAULT_MAX_PER_RUN,
     DEFAULT_SCHEDULE_TIME,
     DOMAIN,
@@ -149,6 +150,10 @@ class PolarisOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Required(
                     CONF_SHADOW_MODE, default=o.get(CONF_SHADOW_MODE, True)
+                ): selector.BooleanSelector(),
+                vol.Required(
+                    CONF_USE_GMAIL_LABELS,
+                    default=o.get(CONF_USE_GMAIL_LABELS, True)
                 ): selector.BooleanSelector(),
             }
         )

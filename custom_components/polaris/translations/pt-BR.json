@@ -39,11 +39,13 @@
           "schedule_enabled": "Executar automaticamente todo dia",
           "schedule_time": "Horário da execução diária",
           "max_per_run": "Máximo de emails por execução",
-          "shadow_mode": "Modo sombra (candidatos à Lixeira só recebem label)"
+          "shadow_mode": "Modo sombra (candidatos à Lixeira só recebem label)",
+          "use_gmail_labels": "Usar as labels existentes do Gmail como categorias"
         },
         "data_description": {
           "llm_base_url": "Qualquer endpoint compatível com a API da OpenAI (LM Studio, Ollama, vLLM...).",
-          "shadow_mode": "Desligue apenas depois de conferir os candidatos por alguns dias."
+          "shadow_mode": "Desligue apenas depois de conferir os candidatos por alguns dias.",
+          "use_gmail_labels": "O modelo pode classificar em qualquer label real do seu Gmail, não só nas do categorias.yaml."
         }
       }
     }
@@ -60,6 +62,9 @@
     "button": {
       "run": {
         "name": "Executar agora"
+      },
+      "suggest": {
+        "name": "Sugerir categorias"
       }
     },
     "select": {
@@ -74,6 +79,11 @@
     "switch": {
       "dry_run": {
         "name": "Simulação (dry-run)"
+      }
+    },
+    "number": {
+      "suggest_sample": {
+        "name": "E-mails a amostrar para sugestões"
       }
     }
   },

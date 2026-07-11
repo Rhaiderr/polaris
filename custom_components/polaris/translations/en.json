@@ -39,11 +39,13 @@
           "schedule_enabled": "Run automatically every day",
           "schedule_time": "Daily run time",
           "max_per_run": "Maximum emails per run",
-          "shadow_mode": "Shadow mode (trash candidates only get a label)"
+          "shadow_mode": "Shadow mode (trash candidates only get a label)",
+          "use_gmail_labels": "Use the account's existing Gmail labels as categories"
         },
         "data_description": {
           "llm_base_url": "Any OpenAI-compatible endpoint (LM Studio, Ollama, vLLM...).",
-          "shadow_mode": "Turn off only after reviewing the candidates for a few days."
+          "shadow_mode": "Turn off only after reviewing the candidates for a few days.",
+          "use_gmail_labels": "The model can classify into any of your real Gmail labels, not only the ones in categorias.yaml."
         }
       }
     }
@@ -60,6 +62,9 @@
     "button": {
       "run": {
         "name": "Run now"
+      },
+      "suggest": {
+        "name": "Suggest categories"
       }
     },
     "select": {
@@ -74,6 +79,11 @@
     "switch": {
       "dry_run": {
         "name": "Simulation (dry run)"
+      }
+    },
+    "number": {
+      "suggest_sample": {
+        "name": "Emails to sample for suggestions"
       }
     }
   },

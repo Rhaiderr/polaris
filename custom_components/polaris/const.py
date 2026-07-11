@@ -17,6 +17,7 @@ CONF_SCHEDULE_ENABLED = "schedule_enabled"
 CONF_SCHEDULE_TIME = "schedule_time"
 CONF_MAX_PER_RUN = "max_per_run"
 CONF_SHADOW_MODE = "shadow_mode"
+CONF_USE_GMAIL_LABELS = "use_gmail_labels"
 CONF_DRY_RUN = "dry_run"
 
 DEFAULT_SCHEDULE_TIME = "07:00:00"

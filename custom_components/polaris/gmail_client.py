@@ -69,6 +69,14 @@ class GmailClient:
             self._labels_cache = {l["name"]: l["id"] for l in resp.get("labels", [])}
         return self._labels_cache
 
+    def user_label_names(self) -> list[str]:
+        """Names of the account's own labels (type=user) — excludes Gmail
+        system labels (INBOX, CATEGORY_*, ...). Used to feed the classifier the
+        account's REAL labels, so it isn't limited to categorias.yaml."""
+        resp = self._get("/labels")
+        return [l["name"] for l in resp.get("labels", [])
+                if l.get("type") == "user"]
+
     def garantir_label(self, nome: str) -> str:
         """Return the label id, creating the label if missing ('/' nests)."""
         cache = self._carregar_labels()

@@ -56,6 +56,7 @@ class MotorConfig:
     dry_run: bool = False
     reprocess: bool = False
     max_n: int | None = None
+    usar_labels_gmail: bool = True   # merge the account's real Gmail labels as categories
     report_dir: str = ""      # /config/www/polaris (for the servable HTML report)
     report_token: str = ""    # unguessable filename component for the report
 
@@ -300,6 +301,28 @@ class Motor:
 
 
 # ---------------------------------------------------------------- entry points
+def _catalogo(cfg: MotorConfig, gmail: GmailClient) -> Catalogo:
+    """Catalog = categorias.yaml + (optionally) the account's real Gmail labels.
+
+    Merged labels get safe defaults (never trash-eligible, archivable), so the
+    classifier can target ANY existing label without hand-editing the YAML —
+    the project isn't limited to what's declared. categorias.yaml still wins
+    for descriptions and the exclusion/archive flags.
+    """
+    cat = carregar_catalogo(os.path.join(cfg.account_dir, "categorias.yaml"))
+    if not cfg.usar_labels_gmail:
+        return cat
+    internas = {cat.label_processado, cat.label_lixeira_candidata, cat.revisar}
+    try:
+        for nome in gmail.user_label_names():
+            if (nome not in cat.nomes and nome not in internas
+                    and not nome.startswith("Polaris/")):
+                cat.nomes.append(nome)   # safe defaults via elegivel_* getters
+    except Exception:  # noqa: BLE001 — label discovery is best-effort
+        _LOGGER.exception("Could not list Gmail labels; using categorias.yaml only")
+    return cat
+
+
 def executar(access_token: str, cfg: MotorConfig, mode: str) -> dict:
     """One full triage run (called through the executor). Returns stats.
 
@@ -314,7 +337,7 @@ def executar(access_token: str, cfg: MotorConfig, mode: str) -> dict:
                         llm.base_url)
         return {"skipped_reason": "llm_unavailable"}
 
-    cat = carregar_catalogo(os.path.join(cfg.account_dir, "categorias.yaml"))
+    cat = _catalogo(cfg, gmail)
     motor = Motor(gmail, llm, cat, cfg)
     if not cfg.dry_run:
         motor.prune_logs()
@@ -347,15 +370,21 @@ def rodar_sugestor(access_token: str, cfg: MotorConfig, max_n: int) -> list[dict
                     api_key=cfg.llm_api_key)
     if not llm.disponivel():
         raise LLMIndisponivel(f"endpoint unavailable: {llm.base_url}")
-    cat = carregar_catalogo(os.path.join(cfg.account_dir, "categorias.yaml"))
+    cat = _catalogo(cfg, gmail)   # don't re-suggest existing labels either
     metas = sugestor.amostrar(gmail, max_n)
     sugestoes = sugestor.sugerir(metas, cat, llm, log=_LOGGER)
     sugestor.salvar_json(cfg.account_dir, sugestoes)
     return sugestoes
 
 
-def aceitar_sugestoes(account_dir: str, numbers: str) -> list[str]:
-    """Apply saved suggestions ('1,3' or 'all'). Returns the added names."""
+def aceitar_sugestoes(account_dir: str, numbers: str,
+                      access_token: str | None = None) -> list[str]:
+    """Apply saved suggestions ('1,3' or 'all'). Returns the added names.
+
+    Adds them to categorias.yaml and, when a token is given, autonomously
+    CREATES the corresponding Gmail labels right away (per account) — so they
+    show up in Gmail immediately, not only on the next run.
+    """
     from . import sugestor
 
     sugestoes = sugestor.carregar_json(account_dir)
@@ -364,10 +393,19 @@ def aceitar_sugestoes(account_dir: str, numbers: str) -> list[str]:
     else:
         idx = [int(t) for t in numbers.split(",") if t.strip().isdigit()]
         aceitas = [sugestoes[i - 1] for i in idx if 1 <= i <= len(sugestoes)]
-    if aceitas:
-        sugestor.aplicar_aceites(
-            os.path.join(account_dir, "categorias.yaml"), aceitas)
-    return [a["nome"] for a in aceitas]
+    if not aceitas:
+        return []
+    sugestor.aplicar_aceites(
+        os.path.join(account_dir, "categorias.yaml"), aceitas)
+    nomes = [a["nome"] for a in aceitas]
+    if access_token:
+        gmail = GmailClient(access_token)
+        for n in nomes:
+            try:
+                gmail.garantir_label(n)
+            except Exception:  # noqa: BLE001 — created lazily on next run anyway
+                _LOGGER.exception("Could not create Gmail label %r", n)
+    return nomes
 
 
 # ------------------------------------------------------------------ report
