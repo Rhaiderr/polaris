@@ -27,8 +27,8 @@ from .classificador import Catalog
 from .gmail_client import GmailClient
 from .llm_client import LLMClient
 
-TAM_LOTE = 40          # emails por chamada ao LLM
-MAX_SUGESTOES_LOTE = 5  # teto por lote (evita listas malucas)
+BATCH_SIZE = 40          # emails por chamada ao LLM
+MAX_SUGGESTIONS_BATCH = 5  # teto por batch (evita listas malucas)
 
 _SYSTEM = """Você organiza caixas de email. Vai receber uma lista de emails (remetente | assunto) e deve propor categorias NOVAS e úteis para organizá-los.
 
@@ -107,20 +107,20 @@ def suggest(metas: list[dict], cat: Catalog, llm: LLMClient,
     """Roda os lotes no LLM e consolida. Retorna [{'nome','descricao','quantos'}]."""
     existing = ", ".join(n for n in cat.names)
     consolidado: dict[str, dict] = {}
-    total_lotes = (len(metas) + TAM_LOTE - 1) // TAM_LOTE
-    for i in range(0, len(metas), TAM_LOTE):
-        lote = metas[i:i + TAM_LOTE]
+    total_batches = (len(metas) + BATCH_SIZE - 1) // BATCH_SIZE
+    for i in range(0, len(metas), BATCH_SIZE):
+        batch = metas[i:i + BATCH_SIZE]
         lines = "\n".join(
-            f"- {m['remetente'][:60]} | {m['assunto'][:80]}" for m in lote
+            f"- {m['remetente'][:60]} | {m['assunto'][:80]}" for m in batch
         )
         system = _SYSTEM.format(existentes=existing,
-                                max_sugestoes=MAX_SUGESTOES_LOTE)
-        user = _USER.format(n=len(lote), linhas=lines)
+                                max_sugestoes=MAX_SUGGESTIONS_BATCH)
+        user = _USER.format(n=len(batch), linhas=lines)
         response = llm.chat(system, user)   # LLMUnavailable sobe ao chamador
         obj = _extract_json(response) or {}
         if log:
-            log.info("Sugestor: lote %d/%d → %d sugestão(ões)",
-                     i // TAM_LOTE + 1, total_lotes,
+            log.info("Sugestor: batch %d/%d → %d sugestão(ões)",
+                     i // BATCH_SIZE + 1, total_batches,
                      len(obj.get("sugestoes", [])))
         for s in obj.get("sugestoes", []):
             nome = str(s.get("nome", "")).strip()[:40]

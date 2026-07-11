@@ -36,9 +36,9 @@ from .llm_client import LLMClient, LLMUnavailable
 from . import prefiltro
 
 # --- Limiares aprovados (Fase 2 §2.4) ---------------------------------------
-LIMIAR_REVISAR = 0.70   # < isto → Revisar
-LIMIAR_ARQUIVAR = 0.80  # ≥ isto e arquivar:true → remove da INBOX
-LIMIAR_EXCLUIR = 0.95   # ≥ isto (+ demais critérios) → trash/sombra
+THRESHOLD_REVIEW = 0.70   # < isto → Revisar
+THRESHOLD_ARCHIVE = 0.80  # ≥ isto e arquivar:true → remove da INBOX
+THRESHOLD_DELETE = 0.95   # ≥ isto (+ demais critérios) → trash/sombra
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
@@ -124,7 +124,7 @@ def decide(
     add = [cat.label_processed]
 
     # JSON inválido OU baixa confiança → Revisar (não arquiva, não exclui).
-    if cls.invalid or cls.confidence < LIMIAR_REVISAR:
+    if cls.invalid or cls.confidence < THRESHOLD_REVIEW:
         add.append(cat.review)
         return Plan(add, remove_inbox=False, deletion=None, action="revisar")
 
@@ -136,7 +136,7 @@ def decide(
     wants_delete = (
         cls.delete
         and cat.eligible_delete(cls.category)
-        and cls.confidence >= LIMIAR_EXCLUIR
+        and cls.confidence >= THRESHOLD_DELETE
         and email.has_list_unsubscribe          # sinal determinístico obrigatório
     )
     if wants_delete and count_thread() == 1:   # só thread de mensagem única
@@ -146,7 +146,7 @@ def decide(
         return Plan(add, remove_inbox=True, deletion="trash", action="excluir")
 
     # Candidato a ARQUIVAR? (categorias sensíveis podem vetar o auto-arquivamento)
-    if (cls.archive and cls.confidence >= LIMIAR_ARQUIVAR
+    if (cls.archive and cls.confidence >= THRESHOLD_ARCHIVE
             and cat.eligible_archive(cls.category)
             and count_thread() == 1):
         return Plan(add, remove_inbox=True, deletion=None, action="arquivar")

@@ -33,9 +33,9 @@ from .llm_client import LLMClient, LLMUnavailable
 from . import prefiltro
 
 # --- Approved thresholds ------------------------------------------------------
-LIMIAR_REVISAR = 0.70   # below this → Review
-LIMIAR_ARQUIVAR = 0.80  # at/above this and arquivar:true → remove from INBOX
-LIMIAR_EXCLUIR = 0.95   # at/above this (+ other criteria) → trash/shadow
+THRESHOLD_REVIEW = 0.70   # below this → Review
+THRESHOLD_ARCHIVE = 0.80  # at/above this and archive:true → remove from INBOX
+THRESHOLD_DELETE = 0.95   # at/above this (+ other criteria) → trash/shadow
 
 LOG_RETENTION_DAYS = 90
 
@@ -56,7 +56,7 @@ class EngineConfig:
     dry_run: bool = False
     reprocess: bool = False
     max_n: int | None = None
-    usar_labels_gmail: bool = True   # merge the account's real Gmail labels as categories
+    use_gmail_labels_field: bool = True   # merge the account's real Gmail labels as categories
     report_dir: str = ""      # /config/www/polaris (for the servable HTML report)
     report_token: str = ""    # unguessable filename component for the report
     webhook_url: str = ""     # /api/webhook/<id> for one-click accept from the report
@@ -97,7 +97,7 @@ def decide(
     add = [cat.label_processed]
 
     # Invalid JSON OR low confidence → Review (never archives, never trashes).
-    if cls.invalid or cls.confidence < LIMIAR_REVISAR:
+    if cls.invalid or cls.confidence < THRESHOLD_REVIEW:
         add.append(cat.review)
         return Plan(add, remove_inbox=False, deletion=None, action="review")
 
@@ -109,7 +109,7 @@ def decide(
     wants_delete = (
         cls.delete
         and cat.eligible_delete(cls.category)
-        and cls.confidence >= LIMIAR_EXCLUIR
+        and cls.confidence >= THRESHOLD_DELETE
         and email.has_list_unsubscribe          # mandatory deterministic signal
     )
     if wants_delete and count_thread() == 1:   # single-message threads only
@@ -119,7 +119,7 @@ def decide(
         return Plan(add, remove_inbox=True, deletion="trash", action="trash")
 
     # Archive candidate? (sensitive categories may veto auto-archiving)
-    if (cls.archive and cls.confidence >= LIMIAR_ARQUIVAR
+    if (cls.archive and cls.confidence >= THRESHOLD_ARCHIVE
             and cat.eligible_archive(cls.category)
             and count_thread() == 1):
         return Plan(add, remove_inbox=True, deletion=None, action="archive")
@@ -163,26 +163,26 @@ class Engine:
         os.replace(tmp, self.state_path)
 
     # ---- label name -> id (created on demand) ----
-    def _label_id(self, nome: str) -> str:
-        if nome not in self._label_id_cache:
-            self._label_id_cache[nome] = self.gmail.ensure_label(nome)
-        return self._label_id_cache[nome]
+    def _label_id(self, name: str) -> str:
+        if name not in self._label_id_cache:
+            self._label_id_cache[name] = self.gmail.ensure_label(name)
+        return self._label_id_cache[name]
 
     # ---- main message loop ----
     def _process(self, pairs: list[dict]) -> None:
-        processado_id = (None if self.cfg.dry_run
+        processed_id = (None if self.cfg.dry_run
                          else self._label_id(self.cat.label_processed))
-        for par in pairs:
+        for pair in pairs:
             if self.cfg.max_n and self.stats["processed"] >= self.cfg.max_n:
                 _LOGGER.info("Limit of %s messages reached; stopping.",
                              self.cfg.max_n)
                 break
             self.stats["seen"] += 1
-            email = self.gmail.get_email(par["id"])
+            email = self.gmail.get_email(pair["id"])
 
             # idempotency: skip anything already labeled Polaris/Processado
-            if (not self.cfg.reprocess and processado_id
-                    and processado_id in email.label_ids):
+            if (not self.cfg.reprocess and processed_id
+                    and processed_id in email.label_ids):
                 self.stats["skipped"] += 1
                 continue
 
@@ -195,26 +195,26 @@ class Engine:
 
             contador = _memo(
                 lambda: self.gmail.count_thread_messages(email.thread_id))
-            plano = decide(email, cls, self.cat, self.cfg.shadow_mode, contador)
+            plan = decide(email, cls, self.cat, self.cfg.shadow_mode, contador)
 
-            self._apply(email, plano)
-            self._log_record(email, cls, plano)
+            self._apply(email, plan)
+            self._log_record(email, cls, plan)
             self.stats["processed"] += 1
-            self.stats[plano.action] = self.stats.get(plano.action, 0) + 1
+            self.stats[plan.action] = self.stats.get(plan.action, 0) + 1
 
-    def _apply(self, email: EmailMsg, plano: Plan) -> None:
+    def _apply(self, email: EmailMsg, plan: Plan) -> None:
         if self.cfg.dry_run:
             return
-        add_ids = [self._label_id(n) for n in plano.add_labels]
-        remove_ids = ["INBOX"] if plano.remove_inbox else []
-        if plano.deletion == "trash":
+        add_ids = [self._label_id(n) for n in plan.add_labels]
+        remove_ids = ["INBOX"] if plan.remove_inbox else []
+        if plan.deletion == "trash":
             # apply labels first (audit trail), then send to Trash
             self.gmail.modify(email.id, add=add_ids, remove=remove_ids)
             self.gmail.trash(email.id)
         else:
             self.gmail.modify(email.id, add=add_ids, remove=remove_ids)
 
-    def _log_record(self, email: EmailMsg, cls: Classification, plano: Plan) -> None:
+    def _log_record(self, email: EmailMsg, cls: Classification, plan: Plan) -> None:
         record = {
             "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
             "id": email.id,
@@ -226,14 +226,14 @@ class Engine:
             "archive": cls.archive,
             "trash": cls.delete,
             "reason": cls.reason,
-            "action": plano.action,
-            "destino": _target(plano, self.cat),
+            "action": plan.action,
+            "destino": _target(plan, self.cat),
             "dry_run": self.cfg.dry_run,
         }
         self.records.append(record)   # always, for the per-run report
         if self.cfg.dry_run:
             _LOGGER.info("[DRY] %s → %s [cat=%s conf=%.2f trash=%s unsub=%s] %s",
-                         (email.subject or "(no subject)")[:50], plano.action,
+                         (email.subject or "(no subject)")[:50], plan.action,
                          cls.category, cls.confidence, cls.delete,
                          email.has_list_unsubscribe, cls.reason)
         else:
@@ -318,14 +318,14 @@ def _catalog(cfg: EngineConfig, gmail: GmailClient) -> Catalog:
     for descriptions and the exclusion/archive flags.
     """
     cat = load_catalog(os.path.join(cfg.account_dir, "categorias.yaml"))
-    if not cfg.usar_labels_gmail:
+    if not cfg.use_gmail_labels_field:
         return cat
     internal = {cat.label_processed, cat.label_trash_candidate, cat.review}
     try:
-        for nome in gmail.user_label_names():
-            if (nome not in cat.names and nome not in internal
-                    and not nome.startswith("Polaris/")):
-                cat.names.append(nome)   # safe defaults via elegivel_* getters
+        for name in gmail.user_label_names():
+            if (name not in cat.names and name not in internal
+                    and not name.startswith("Polaris/")):
+                cat.names.append(name)   # safe defaults via elegivel_* getters
     except Exception:  # noqa: BLE001 — label discovery is best-effort
         _LOGGER.exception("Could not list Gmail labels; using categorias.yaml only")
     return cat
@@ -346,27 +346,27 @@ def run_triage(access_token: str, cfg: EngineConfig, mode: str) -> dict:
         return {"skipped_reason": "llm_unavailable"}
 
     cat = _catalog(cfg, gmail)
-    motor = Engine(gmail, llm, cat, cfg)
+    engine = Engine(gmail, llm, cat, cfg)
     if not cfg.dry_run:
-        motor.prune_logs()
+        engine.prune_logs()
     try:
         if mode == "full":
-            motor.full()
+            engine.full()
         else:
-            motor.incremental()
+            engine.incremental()
     except LLMUnavailable as e:
         _LOGGER.warning("LLM went down mid-run (%s). The next incremental "
                         "run catches up.", e)
-        motor.stats["interrupted"] = "llm_unavailable"
-    motor.stats["last_run"] = _now_iso()
+        engine.stats["interrupted"] = "llm_unavailable"
+    engine.stats["last_run"] = _now_iso()
     # per-run report (any mode): last-run.json + servable HTML, link in stats
     try:
-        link = _write_reports(cfg, motor.records, motor.stats, mode)
+        link = _write_reports(cfg, engine.records, engine.stats, mode)
         if link:
-            motor.stats["report_link"] = link
+            engine.stats["report_link"] = link
     except Exception:  # noqa: BLE001 — report is best-effort, never fail the run
         _LOGGER.exception("Failed to write the run report")
-    return motor.stats
+    return engine.stats
 
 
 def run_suggestor(access_token: str, cfg: EngineConfig, max_n: int) -> dict:
@@ -382,24 +382,24 @@ def run_suggestor(access_token: str, cfg: EngineConfig, max_n: int) -> dict:
     if not llm.available():
         raise LLMUnavailable(f"endpoint unavailable: {llm.base_url}")
     cat = _catalog(cfg, gmail)   # don't re-suggest existing labels either
-    metas = sugestor.sample(gmail, max_n)
-    sugestoes = sugestor.suggest(metas, cat, llm, log=_LOGGER)
-    sugestor.save_json(cfg.account_dir, sugestoes)
+    samples = sugestor.sample(gmail, max_n)
+    suggestions = sugestor.suggest(samples, cat, llm, log=_LOGGER)
+    sugestor.save_json(cfg.account_dir, suggestions)
 
     # 2nd pass: map each sampled email into existing + suggested categories
-    names = list(cat.names) + [s["nome"] for s in sugestoes]
+    names = list(cat.names) + [s["nome"] for s in suggestions]
     descr = dict(cat.descriptions)
-    for s in sugestoes:
+    for s in suggestions:
         descr[s["nome"]] = s.get("descricao", "")
-    distribuicao = sugestor.distribute(metas, names, descr, cat.review,
+    distribution = sugestor.distribute(samples, names, descr, cat.review,
                                        llm, log=_LOGGER)
-    sugeridas = {s["nome"] for s in sugestoes}
+    suggested = {s["nome"] for s in suggestions}
     link = None
     try:
-        link = _write_suggestions_html(cfg, sugestoes, distribuicao, sugeridas)
+        link = _write_suggestions_html(cfg, suggestions, distribution, suggested)
     except Exception:  # noqa: BLE001 — report is best-effort
         _LOGGER.exception("Failed to write the suggestions report")
-    return {"suggestions": sugestoes, "report_link": link}
+    return {"suggestions": suggestions, "report_link": link}
 
 
 def accept_suggestions(account_dir: str, numbers: str,
@@ -412,12 +412,12 @@ def accept_suggestions(account_dir: str, numbers: str,
     """
     from . import sugestor
 
-    sugestoes = sugestor.load_json(account_dir)
+    suggestions = sugestor.load_json(account_dir)
     if numbers.strip().lower() in ("all", "todas", "todos"):
-        accepted = sugestoes
+        accepted = suggestions
     else:
         idx = [int(t) for t in numbers.split(",") if t.strip().isdigit()]
-        accepted = [sugestoes[i - 1] for i in idx if 1 <= i <= len(sugestoes)]
+        accepted = [suggestions[i - 1] for i in idx if 1 <= i <= len(suggestions)]
     if not accepted:
         return []
     sugestor.apply_accepts(
@@ -435,39 +435,39 @@ def accept_suggestions(account_dir: str, numbers: str,
 
 # ------------------------------------------------------------------ report
 # Human-readable destination + presentation order/style, per action.
-_ACOES = {
-    "trash":   ("🗑️", "Enviados para a Lixeira", "trash"),
-    "shadow":  ("🌓", "Candidatos à Lixeira (modo sombra)", "shadow"),
-    "archive": ("📥", "Arquivados (fora da Caixa de Entrada)", "archive"),
-    "review":  ("👀", "Para revisar", "review"),
-    "label":   ("🏷️", "Apenas rotulados (seguem na Caixa de Entrada)", "label"),
+_ACTIONS = {
+    "trash":   ("🗑️", "Sent to Trash", "trash"),
+    "shadow":  ("🌓", "Trash candidates (shadow mode)", "shadow"),
+    "archive": ("📥", "Archived (out of the Inbox)", "archive"),
+    "review":  ("👀", "To review", "review"),
+    "label":   ("🏷️", "Labeled only (kept in the Inbox)", "label"),
 }
-_ORDEM = ["trash", "shadow", "archive", "review", "label"]
+_ORDER = ["trash", "shadow", "archive", "review", "label"]
 
 
-def _target(plano: "Plan", cat: Catalog) -> str:
-    """Frase curta de 'onde foi parar', para o relatório."""
-    if plano.action == "trash":
-        return "Lixeira"
-    if plano.action == "shadow":
-        return f"Caixa de Entrada + label “{cat.label_trash_candidate}”"
-    if plano.action == "archive":
-        cat_label = next((n for n in plano.add_labels
+def _target(plan: "Plan", cat: Catalog) -> str:
+    """Short 'where it ended up' phrase, for the report."""
+    if plan.action == "trash":
+        return "Trash"
+    if plan.action == "shadow":
+        return f"Inbox + label “{cat.label_trash_candidate}”"
+    if plan.action == "archive":
+        cat_label = next((n for n in plan.add_labels
                           if n not in (cat.label_processed,)), "")
-        return f"Arquivado sob “{cat_label}”" if cat_label else "Arquivado"
-    if plano.action == "review":
-        return f"Caixa de Entrada + label “{cat.review}”"
-    cat_label = next((n for n in plano.add_labels
+        return f"Archived under “{cat_label}”" if cat_label else "Archived"
+    if plan.action == "review":
+        return f"Inbox + label “{cat.review}”"
+    cat_label = next((n for n in plan.add_labels
                       if n != cat.label_processed), "")
-    return f"Caixa de Entrada + label “{cat_label}”" if cat_label \
-        else "Caixa de Entrada"
+    return f"Inbox + label “{cat_label}”" if cat_label \
+        else "Inbox"
 
 
 def _write_reports(cfg: EngineConfig, records: list[dict],
                          stats: dict, mode: str) -> str | None:
-    """Grava last-run.json (privado, no account_dir) e um HTML servível.
+    """Write last-run.json (private, in account_dir) and a servable HTML.
 
-    Retorna o path /local/... do HTML (para o link da notificação) ou None.
+    Returns the /local/... path of the HTML (for the notification link) or None.
     """
     doc = {
         "gerado_em": _now_iso(),
@@ -479,19 +479,19 @@ def _write_reports(cfg: EngineConfig, records: list[dict],
                             "trash", "shadow", "skipped")},
         "itens": records,
     }
-    # 1) JSON estruturado, privado (sempre)
+    # 1) structured JSON, private (always)
     with open(os.path.join(cfg.account_dir, "last-run.json"),
               "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)
 
-    # 2) HTML servível via /local (nome contém token não-adivinhável)
+    # 2) HTML servable via /local (name contains an unguessable token)
     if not cfg.report_dir or not cfg.report_token:
         return None
     os.makedirs(cfg.report_dir, exist_ok=True)
-    nome = f"report-{cfg.report_token}.html"
-    with open(os.path.join(cfg.report_dir, nome), "w", encoding="utf-8") as f:
+    name = f"report-{cfg.report_token}.html"
+    with open(os.path.join(cfg.report_dir, name), "w", encoding="utf-8") as f:
         f.write(_report_html(doc))
-    return f"/local/polaris/{nome}"
+    return f"/local/polaris/{name}"
 
 
 def _esc(s) -> str:
@@ -579,12 +579,12 @@ _REPORT_JS = """
     var a=ch.getAttribute('data-action');
     off[a]=!off[a]; ch.classList.toggle('off',!!off[a]); apply();
   });});
-  var DEST={trash:'Lixeira',shadow:'Candidato a Lixeira',archive:'Arquivado',
-            review:'Revisar',label:'Rotulado'};
+  var DEST={trash:'Trash',shadow:'Trash candidate',archive:'Archived',
+            review:'Review',label:'Labeled'};
   function cell(s){s=(s==null?'':''+s);
     return /[",\\n;]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}
   document.getElementById('csv').addEventListener('click',function(){
-    var rows=[['Destino','Assunto','Remetente','Categoria','Confianca','Motivo']];
+    var rows=[['Target','Subject','Sender','Category','Confidence','Reason']];
     secs.forEach(function(sec){
       if(sec.style.display==='none')return;
       var d=DEST[sec.getAttribute('data-action')]||sec.getAttribute('data-action');
@@ -598,7 +598,7 @@ _REPORT_JS = """
     var csv='\\ufeff'+rows.map(function(r){return r.map(cell).join(',');}).join('\\n');
     var a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
-    a.download='polaris-relatorio.csv';document.body.appendChild(a);a.click();
+    a.download='polaris-report.csv';document.body.appendChild(a);a.click();
     setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},100);
   });
   document.querySelectorAll('th[data-sort]').forEach(function(th){
@@ -621,32 +621,32 @@ _REPORT_JS = """
 
 
 def _report_html(doc: dict) -> str:
-    itens = doc["itens"]
-    por_acao: dict[str, list] = {}
-    for r in itens:
-        por_acao.setdefault(r["action"], []).append(r)
-    conta = _esc(doc["conta"])
+    items = doc["itens"]
+    by_action: dict[str, list] = {}
+    for r in items:
+        by_action.setdefault(r["action"], []).append(r)
+    account = _esc(doc["conta"])
     sim = doc["simulacao"]
-    quando = _esc(doc["gerado_em"][:19].replace("T", " "))
-    modo = "Completo" if doc["modo"] == "full" else "Incremental"
+    when = _esc(doc["gerado_em"][:19].replace("T", " "))
+    mode_label = "Full" if doc["modo"] == "full" else "Incremental"
 
-    cats = sorted({r["category"] for r in itens})
+    cats = sorted({r["category"] for r in items})
     cat_opts = "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>'
                        for c in cats)
 
     chips = "".join(
         f'<button type="button" class="chip {css} on" data-action="{k}">'
-        f'{ic} <span class="cn">{_esc(len(por_acao.get(k, [])))}</span> '
-        f'{_esc(titulo.split(" (")[0])}</button>'
-        for k, (ic, titulo, css) in _ACOES.items() if por_acao.get(k)
+        f'{ic} <span class="cn">{_esc(len(by_action.get(k, [])))}</span> '
+        f'{_esc(title.split(" (")[0])}</button>'
+        for k, (ic, title, css) in _ACTIONS.items() if by_action.get(k)
     )
 
     sections = []
-    for k in _ORDEM:
-        lines = por_acao.get(k)
+    for k in _ORDER:
+        lines = by_action.get(k)
         if not lines:
             continue
-        ic, titulo, css = _ACOES[k]
+        ic, title, css = _ACTIONS[k]
         lines = sorted(lines, key=lambda r: -r["confidence"])
         trs = "".join(
             f"<tr data-cat=\"{_esc(r['category'])}\" data-conf=\"{r['confidence']:.2f}\">"
@@ -654,39 +654,39 @@ def _report_html(doc: dict) -> str:
             f"<td>{_esc(r['sender'])}</td>"
             f"<td>{_esc(r['category'])}</td>"
             f"<td class='num'>{r['confidence']:.2f}</td>"
-            f"<td class='motivo'>{_esc(r['reason'])}</td></tr>"
+            f"<td class='reason'>{_esc(r['reason'])}</td></tr>"
             for r in lines
         )
         sections.append(
-            f"<section class='{css}' data-action='{k}'><h2>{ic} {_esc(titulo)} "
+            f"<section class='{css}' data-action='{k}'><h2>{ic} {_esc(title)} "
             f"<span class='n'>{len(lines)}</span></h2>"
             "<table><thead><tr>"
-            "<th data-sort='text'>Assunto</th><th data-sort='text'>Remetente</th>"
-            "<th data-sort='text'>Categoria</th><th data-sort='num'>Conf.</th>"
-            "<th data-sort='text'>Motivo</th></tr></thead>"
+            "<th data-sort='text'>Subject</th><th data-sort='text'>Sender</th>"
+            "<th data-sort='text'>Category</th><th data-sort='num'>Conf.</th>"
+            "<th data-sort='text'>Reason</th></tr></thead>"
             f"<tbody>{trs}</tbody></table></section>"
         )
 
-    banner = ('<div class="sim">MODO SIMULAÇÃO — nada foi alterado no Gmail</div>'
+    banner = ('<div class="sim">SIMULATION MODE — nothing was changed in Gmail</div>'
               if sim else "")
-    controles = (
+    controls = (
         '<div class="controls">'
-        '<input id="q" type="search" placeholder="🔎 Buscar remetente, assunto, motivo…">'
-        f'<select id="cat"><option value="__all__">Todas as categorias</option>{cat_opts}</select>'
-        '<label class="cf">Conf. mín. '
+        '<input id="q" type="search" placeholder="🔎 Search sender, subject, reason…">'
+        f'<select id="cat"><option value="__all__">All categories</option>{cat_opts}</select>'
+        '<label class="cf">Min conf. '
         '<input id="conf" type="number" min="0" max="1" step="0.05" value="0"></label>'
-        '<button type="button" id="csv" class="btn">⬇ Baixar CSV</button>'
-        '<span class="hint">clique nas caixas p/ mostrar/ocultar · clique no cabeçalho '
-        'p/ ordenar · o CSV baixa o que estiver visível (após os filtros)</span>'
+        '<button type="button" id="csv" class="btn">⬇ Download CSV</button>'
+        '<span class="hint">click the chips to show/hide · click a header to sort '
+        '· the CSV downloads what is visible (after the filters)</span>'
         '</div>'
     )
-    corpo = "".join(sections) or '<p>Nada processado nesta execução.</p>'
-    return f"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+    body = "".join(sections) or '<p>Nothing processed in this run.</p>'
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polaris — relatório {conta}</title><style>{_REPORT_CSS}</style></head><body>
-<header><h1>🧭 Polaris — {conta}</h1>
-<div class="meta">Execução {modo} · {quando} UTC · {_esc(len(itens))} e-mails</div></header>
-<main>{banner}<div class="chips">{chips}</div>{controles}{corpo}</main>
+<title>Polaris — report {account}</title><style>{_REPORT_CSS}</style></head><body>
+<header><h1>🧭 Polaris — {account}</h1>
+<div class="meta">{mode_label} run · {when} UTC · {_esc(len(items))} emails</div></header>
+<main>{banner}<div class="chips">{chips}</div>{controls}{body}</main>
 <script>{_REPORT_JS}</script>
 </body></html>"""
 
@@ -715,104 +715,104 @@ _SUGGEST_JS = """
   if(!btn)return;
   btn.addEventListener('click',function(){
     var nums=[].slice.call(document.querySelectorAll('.acc:checked')).map(function(c){return c.value;});
-    if(!nums.length){msg.textContent='Selecione ao menos uma categoria.';return;}
-    btn.disabled=true; btn.textContent='Criando…'; msg.textContent='';
+    if(!nums.length){msg.textContent='Select at least one category.';return;}
+    btn.disabled=true; btn.textContent='Creating…'; msg.textContent='';
     fetch(WEBHOOK,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({numbers:nums.join(',')})})
     .then(function(r){return r.json().catch(function(){return{};});})
     .then(function(j){
       var add=(j&&j.added&&j.added.length)?j.added.join(', '):nums.join(', ');
-      msg.textContent='✅ Criado no Gmail: '+add; btn.textContent='Aceito ✓';
+      msg.textContent='✅ Created in Gmail: '+add; btn.textContent='Accepted ✓';
     }).catch(function(e){
-      btn.disabled=false; btn.textContent='Aceitar selecionadas';
-      msg.textContent='Erro ao aceitar: '+e;
+      btn.disabled=false; btn.textContent='Accept selected';
+      msg.textContent='Error accepting: '+e;
     });
   });
 })();
 """
 
 
-def _write_suggestions_html(cfg: EngineConfig, sugestoes: list[dict],
-                            distribuicao: list[dict], sugeridas: set) -> str | None:
+def _write_suggestions_html(cfg: EngineConfig, suggestions: list[dict],
+                            distribution: list[dict], suggested: set) -> str | None:
     if not cfg.report_dir or not cfg.report_token:
         return None
     os.makedirs(cfg.report_dir, exist_ok=True)
-    nome = f"suggest-{cfg.report_token}.html"
+    name = f"suggest-{cfg.report_token}.html"
     doc = {
         "conta": os.path.basename(cfg.account_dir),
         "gerado_em": _now_iso(),
-        "sugestoes": sugestoes,
-        "distribuicao": distribuicao,
-        "sugeridas": sugeridas,
+        "sugestoes": suggestions,
+        "distribuicao": distribution,
+        "sugeridas": suggested,
         "webhook_url": cfg.webhook_url,
     }
-    with open(os.path.join(cfg.report_dir, nome), "w", encoding="utf-8") as f:
+    with open(os.path.join(cfg.report_dir, name), "w", encoding="utf-8") as f:
         f.write(_suggestions_html(doc))
-    return f"/local/polaris/{nome}"
+    return f"/local/polaris/{name}"
 
 
-def _email_table(itens: list[dict]) -> str:
+def _email_table(items: list[dict]) -> str:
     trs = "".join(
         f"<tr><td class='sub'>{_esc(m.get('assunto')) or '—'}</td>"
         f"<td>{_esc(m.get('remetente'))}</td></tr>"
-        for m in itens)
-    return ("<table><thead><tr><th>Assunto</th><th>Remetente</th></tr></thead>"
+        for m in items)
+    return ("<table><thead><tr><th>Subject</th><th>Sender</th></tr></thead>"
             f"<tbody>{trs}</tbody></table>")
 
 
 def _suggestions_html(doc: dict) -> str:
-    conta = _esc(doc["conta"])
-    quando = _esc(doc["gerado_em"][:19].replace("T", " "))
-    sugestoes = doc["sugestoes"]
-    sugeridas = doc["sugeridas"]
-    porcat: dict[str, list] = {}
+    account = _esc(doc["conta"])
+    when = _esc(doc["gerado_em"][:19].replace("T", " "))
+    suggestions = doc["sugestoes"]
+    suggested = doc["sugeridas"]
+    by_cat: dict[str, list] = {}
     for m in doc["distribuicao"]:
-        porcat.setdefault(m.get("categoria", "Revisar"), []).append(m)
+        by_cat.setdefault(m.get("categoria", "Revisar"), []).append(m)
 
-    secoes_sug = []
-    for i, s in enumerate(sugestoes, 1):
-        nome = s["nome"]
-        itens = porcat.get(nome, [])
-        secoes_sug.append(
+    sug_sections = []
+    for i, s in enumerate(suggestions, 1):
+        name = s["nome"]
+        items = by_cat.get(name, [])
+        sug_sections.append(
             f"<section class='sug'><h2><label>"
-            f"<input class='acc' type='checkbox' value='{i}' checked> ✨ {_esc(nome)}"
-            f"</label> <span class='n'>{len(itens)}</span></h2>"
+            f"<input class='acc' type='checkbox' value='{i}' checked> ✨ {_esc(name)}"
+            f"</label> <span class='n'>{len(items)}</span></h2>"
             f"<p class='desc'>{_esc(s.get('descricao',''))}</p>"
-            + (_email_table(itens) if itens else
-               "<p class='desc'>Nenhum e-mail da amostra caiu aqui — o modelo "
-               "propôs pelo tema geral.</p>")
+            + (_email_table(items) if items else
+               "<p class='desc'>No sampled email landed here — the model "
+               "proposed it from the general theme.</p>")
             + "</section>")
 
     existing = []
-    for nome in sorted(porcat):
-        if nome in sugeridas:
+    for name in sorted(by_cat):
+        if name in suggested:
             continue
-        itens = porcat[nome]
+        items = by_cat[name]
         existing.append(
-            f"<details><summary>{_esc(nome)} <span class='n'>{len(itens)}</span>"
-            f"</summary>{_email_table(itens)}</details>")
+            f"<details><summary>{_esc(name)} <span class='n'>{len(items)}</span>"
+            f"</summary>{_email_table(items)}</details>")
 
-    tem_wh = bool(doc["webhook_url"])
-    barra = (
-        '<div class="bar"><button id="accept" class="btn">Aceitar selecionadas'
-        '</button><span id="accmsg"></span></div>' if tem_wh else
-        '<div class="msg">As sugestões estão pré-marcadas. Aceite chamando o '
-        'serviço <code>polaris.accept_categories</code> com os números.</div>')
+    has_wh = bool(doc["webhook_url"])
+    bar = (
+        '<div class="bar"><button id="accept" class="btn">Accept selected'
+        '</button><span id="accmsg"></span></div>' if has_wh else
+        '<div class="msg">The suggestions are pre-checked. Accept by calling the '
+        '<code>polaris.accept_categories</code> service with the numbers.</div>')
     wh_js = (f"var WEBHOOK={doc['webhook_url']!r};{_SUGGEST_JS}"
-             if tem_wh else "")
-    return f"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+             if has_wh else "")
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polaris — sugestões {conta}</title>
+<title>Polaris — suggestions {account}</title>
 <style>{_REPORT_CSS}{_SUGGEST_CSS}</style></head><body>
-<header><h1>💡 Polaris — sugestões de categorias</h1>
-<div class="meta">{conta} · {quando} UTC · {len(sugestoes)} sugestão(ões)</div></header>
+<header><h1>💡 Polaris — category suggestions</h1>
+<div class="meta">{account} · {when} UTC · {len(suggestions)} suggestion(s)</div></header>
 <main>
-<p class="intro">Marque as categorias novas que quer criar e clique em aceitar —
-as labels são criadas no seu Gmail na hora. Abaixo, o que cairia em cada uma
-(e nas categorias que você já tem).</p>
-{barra}
-{''.join(secoes_sug) or '<p>Nenhuma categoria nova a sugerir — as atuais já cobrem a amostra.</p>'}
-<h2 style="margin-top:24px">Distribuição nas categorias existing</h2>
+<p class="intro">Check the new categories you want to create and click accept —
+the labels are created in your Gmail right away. Below, what would land in each
+one (and in the categories you already have).</p>
+{bar}
+{''.join(sug_sections) or '<p>No new category to suggest — the current ones already cover the sample.</p>'}
+<h2 style="margin-top:24px">Distribution across existing categories</h2>
 {''.join(existing) or '<p class="desc">—</p>'}
 </main>
 <script>{wh_js}</script>

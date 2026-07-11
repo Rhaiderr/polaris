@@ -166,7 +166,7 @@ class PolarisAccount:
             reprocess=reprocess,
             max_n=max_n if max_n is not None
             else int(o.get(CONF_MAX_PER_RUN, DEFAULT_MAX_PER_RUN)),
-            usar_labels_gmail=o.get(CONF_USE_GMAIL_LABELS, True),
+            use_gmail_labels_field=o.get(CONF_USE_GMAIL_LABELS, True),
             report_dir=self.report_dir,
             report_token=self.report_token,
             webhook_url=self.webhook_url,
@@ -240,7 +240,7 @@ class PolarisAccount:
                 title="Polaris — account initialized",
                 notification_id=nid)
             return
-        corpo = (
+        body = (
             f"Account **{self.email}**{' (dry run)' if dry_run else ''}: "
             f"{stats.get('processed', 0)} email(s) triaged — "
             f"{stats.get('label', 0)} labeled, "
@@ -250,14 +250,14 @@ class PolarisAccount:
             f"{stats.get('shadow', 0)} trash candidate(s)."
         )
         if stats.get("interrupted"):
-            corpo += " ⚠️ The model went down mid-run; the next run continues."
+            body += " ⚠️ The model went down mid-run; the next run continues."
         if stats.get("report_link"):
-            corpo += (
+            body += (
                 "\n\n📄 "
                 f'<a href="{stats["report_link"]}" target="_blank" '
-                'rel="noopener">Ver relatório completo</a>')
+                'rel="noopener">View full report</a>')
         persistent_notification.async_create(
-            self.hass, corpo, title="Polaris — triage summary",
+            self.hass, body, title="Polaris — triage summary",
             notification_id=nid)
 
     # ------------------------------------------------------------ suggestor
@@ -278,39 +278,39 @@ class PolarisAccount:
                     title="Polaris — suggestor",
                     notification_id=f"polaris_suggest_{self.entry.entry_id}")
                 return
-        sugestoes = res.get("suggestions") or []
+        suggestions = res.get("suggestions") or []
         link = res.get("report_link")
-        if not sugestoes:
-            corpo = (f"Account **{self.email}**: nothing new to suggest — "
+        if not suggestions:
+            body = (f"Account **{self.email}**: nothing new to suggest — "
                      "the current categories already cover the mailbox.")
         else:
-            names = ", ".join(s["nome"] for s in sugestoes)
-            corpo = (
-                f"Account **{self.email}**: {len(sugestoes)} new category(ies) "
+            names = ", ".join(s["nome"] for s in suggestions)
+            body = (
+                f"Account **{self.email}**: {len(suggestions)} new category(ies) "
                 f"suggested — {names}."
             )
             if link:
-                corpo += (
+                body += (
                     "\n\n📄 "
                     f'<a href="{link}" target="_blank" rel="noopener">Open the '
                     "report to review what goes where and accept with one "
                     "click</a>")
             else:
-                corpo += ("\n\nAccept with the `polaris.accept_categories` "
+                body += ("\n\nAccept with the `polaris.accept_categories` "
                           "service (numbers, e.g. `1,3` or `all`).")
         persistent_notification.async_create(
-            self.hass, corpo, title="Polaris — category suggestions",
+            self.hass, body, title="Polaris — category suggestions",
             notification_id=f"polaris_suggest_{self.entry.entry_id}")
 
     async def async_accept(self, numbers: str) -> list[str]:
         token = await self._token()   # autonomy: create the Gmail labels now
         names = await self.hass.async_add_executor_job(
             motor.accept_suggestions, self.account_dir, numbers, token)
-        corpo = (f"Account **{self.email}**: {len(names)} category(ies) "
+        body = (f"Account **{self.email}**: {len(names)} category(ies) "
                  f"added and created in Gmail: {', '.join(names)}." if names
                  else f"Account **{self.email}**: nothing to accept.")
         persistent_notification.async_create(
-            self.hass, corpo, title="Polaris — categories",
+            self.hass, body, title="Polaris — categories",
             notification_id=f"polaris_suggest_{self.entry.entry_id}")
         return names
 

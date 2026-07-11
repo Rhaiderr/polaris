@@ -27,8 +27,8 @@ from .classificador import Catalog
 from .gmail_client import GmailClient
 from .llm_client import LLMClient
 
-TAM_LOTE = 40          # emails per LLM call
-MAX_SUGESTOES_LOTE = 5  # cap per batch (avoids crazy lists)
+BATCH_SIZE = 40          # emails per LLM call
+MAX_SUGGESTIONS_BATCH = 5  # cap per batch (avoids crazy lists)
 
 _SYSTEM = """Você organiza caixas de email. Vai receber uma lista de emails (remetente | assunto) e deve propor categorias NOVAS e úteis para organizá-los.
 
@@ -49,7 +49,7 @@ _USER = """Emails ({n}):
 
 Responda apenas o JSON."""
 
-TAM_LOTE_DIST = 25   # emails por chamada no passe de distribuição
+DIST_BATCH_SIZE = 25   # emails per call in the distribution pass
 
 _SYSTEM_DIST = """Você classifica emails em categorias. Para CADA email da lista, escolha EXATAMENTE uma categoria da lista abaixo (use o nome EXATO). Se nada encaixar, use "{revisar}".
 
@@ -69,33 +69,33 @@ Responda apenas o JSON."""
 
 
 def distribute(metas, names, descriptions, revisar, llm, log=None):
-    """2º passe: mapeia CADA email da amostra numa categoria (existing +
-    sugeridas). Retorna a lista de metas com a key 'categoria' preenchida
-    (só remetente/assunto — mesmo custo baixo da amostragem)."""
+    """2nd pass: map EACH sampled email into a category (existing +
+    suggested). Returns the meta list with the 'categoria' key filled in
+    (sender/subject only — same low cost as the sampling)."""
     linhas_cat = "\n".join(
         f"- {n}: {descriptions.get(n, '')}".rstrip(": ") for n in names)
     system = _SYSTEM_DIST.format(revisar=revisar, categorias=linhas_cat)
     validos = set(names) | {revisar}
     out = [dict(m, categoria=revisar) for m in metas]
-    for i in range(0, len(metas), TAM_LOTE_DIST):
-        lote = metas[i:i + TAM_LOTE_DIST]
+    for i in range(0, len(metas), DIST_BATCH_SIZE):
+        batch = metas[i:i + DIST_BATCH_SIZE]
         lines = "\n".join(
             f"{j}. {m['remetente'][:60]} | {m['assunto'][:80]}"
-            for j, m in enumerate(lote))
+            for j, m in enumerate(batch))
         obj = _extract_json(llm.chat(system, _USER_DIST.format(
-            n=len(lote), linhas=lines))) or {}
+            n=len(batch), linhas=lines))) or {}
         for it in obj.get("itens", []):
             try:
                 j = int(it.get("i"))
             except (TypeError, ValueError):
                 continue
             cat = str(it.get("cat", "")).strip()
-            if 0 <= j < len(lote) and cat in validos:
+            if 0 <= j < len(batch) and cat in validos:
                 out[i + j]["categoria"] = cat
         if log:
-            log.info("Distribuição: lote %d/%d",
-                     i // TAM_LOTE_DIST + 1,
-                     (len(metas) + TAM_LOTE_DIST - 1) // TAM_LOTE_DIST)
+            log.info("Distribution: batch %d/%d",
+                     i // DIST_BATCH_SIZE + 1,
+                     (len(metas) + DIST_BATCH_SIZE - 1) // DIST_BATCH_SIZE)
     return out
 
 
@@ -156,20 +156,20 @@ def suggest(metas: list[dict], cat: Catalog, llm: LLMClient,
     """Run the batches through the LLM and consolidate. Returns [{'nome','descricao','quantos'}]."""
     existing = ", ".join(n for n in cat.names)
     consolidado: dict[str, dict] = {}
-    total_lotes = (len(metas) + TAM_LOTE - 1) // TAM_LOTE
-    for i in range(0, len(metas), TAM_LOTE):
-        lote = metas[i:i + TAM_LOTE]
+    total_batches = (len(metas) + BATCH_SIZE - 1) // BATCH_SIZE
+    for i in range(0, len(metas), BATCH_SIZE):
+        batch = metas[i:i + BATCH_SIZE]
         lines = "\n".join(
-            f"- {m['remetente'][:60]} | {m['assunto'][:80]}" for m in lote
+            f"- {m['remetente'][:60]} | {m['assunto'][:80]}" for m in batch
         )
         system = _SYSTEM.format(existentes=existing,
-                                max_sugestoes=MAX_SUGESTOES_LOTE)
-        user = _USER.format(n=len(lote), linhas=lines)
+                                max_sugestoes=MAX_SUGGESTIONS_BATCH)
+        user = _USER.format(n=len(batch), linhas=lines)
         response = llm.chat(system, user)   # LLMUnavailable bubbles up to the caller
         obj = _extract_json(response) or {}
         if log:
             log.info("Suggestor: batch %d/%d → %d suggestion(s)",
-                     i // TAM_LOTE + 1, total_lotes,
+                     i // BATCH_SIZE + 1, total_batches,
                      len(obj.get("sugestoes", [])))
         for s in obj.get("sugestoes", []):
             nome = str(s.get("nome", "")).strip()[:40]
@@ -223,10 +223,10 @@ def apply_accepts(categorias_path: str, accepted: list[dict]) -> None:
 
 
 # --------------------------------------------------------- persistence
-def save_json(account_dir_for: str, sugestoes: list[dict]) -> str:
+def save_json(account_dir: str, sugestoes: list[dict]) -> str:
     """Persist suggestions to <account_dir>/sugestoes.json (consumed by acceptance)."""
-    os.makedirs(account_dir_for, exist_ok=True)
-    path = os.path.join(account_dir_for, "sugestoes.json")
+    os.makedirs(account_dir, exist_ok=True)
+    path = os.path.join(account_dir, "sugestoes.json")
     doc = {
         "gerado_em": dt.datetime.now(dt.timezone.utc).isoformat(),
         "sugestoes": sugestoes,
@@ -236,8 +236,8 @@ def save_json(account_dir_for: str, sugestoes: list[dict]) -> str:
     return path
 
 
-def load_json(account_dir_for: str) -> list[dict]:
-    path = os.path.join(account_dir_for, "sugestoes.json")
+def load_json(account_dir: str) -> list[dict]:
+    path = os.path.join(account_dir, "sugestoes.json")
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"{path} does not exist. Run the polaris.suggest_categories service first."
