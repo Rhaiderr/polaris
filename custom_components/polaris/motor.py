@@ -145,6 +145,9 @@ class Engine:
         self.stats = {"seen": 0, "processed": 0, "skipped": 0,
                       "review": 0, "archive": 0, "trash": 0,
                       "shadow": 0, "label": 0}
+        # progress reporting (optional): callback(done, total) fired per email
+        self.progress_cb = None
+        self.total = 0
 
     # ---- state (atomic read/write) ----
     def _load_state(self) -> dict:
@@ -184,6 +187,8 @@ class Engine:
             if (not self.cfg.reprocess and processed_id
                     and processed_id in email.label_ids):
                 self.stats["skipped"] += 1
+                if self.progress_cb:
+                    self.progress_cb(self.stats["seen"], self.total)
                 continue
 
             pf = prefiltro.apply(email)
@@ -201,6 +206,8 @@ class Engine:
             self._log_record(email, cls, plan)
             self.stats["processed"] += 1
             self.stats[plan.action] = self.stats.get(plan.action, 0) + 1
+            if self.progress_cb:
+                self.progress_cb(self.stats["seen"], self.total)
 
     def _apply(self, email: EmailMsg, plan: Plan) -> None:
         if self.cfg.dry_run:
@@ -267,18 +274,32 @@ class Engine:
                             "%s", depois)
             pairs = self.gmail.messages_list(depois)
             novo_hid = self.gmail.get_profile()["historyId"]
+        self.total = len(pairs)
         self._process(pairs)
         state["historyId"] = novo_hid or state["historyId"]
         state["last_run"] = _now_iso()
         self._save_state(state)
 
     def full(self) -> None:
+        """Backlog sweep, OLDEST message first.
+
+        Gmail's messages.list only returns newest-first, so we fetch every
+        unprocessed id (cheap: id+threadId only), reverse to oldest-first and
+        then keep at most max_n. Repeated 'full' runs therefore march through
+        the whole mailbox from the beginning (the Processado label drops the
+        ones already done from the query), converging on a fully reviewed inbox.
+        max_n falsy (None/0) = no limit → the entire backlog in one run.
+        """
         query = "-in:chats"
         if not self.cfg.reprocess:
             query += f' -label:"{self.cat.label_processed}"'
-        pairs = self.gmail.messages_list(query, max_results=self.cfg.max_n)
-        _LOGGER.info("Full: %d candidate message(s) (query: %s).",
-                     len(pairs), query)
+        pairs = self.gmail.messages_list(query)   # all matches, newest-first
+        pairs.reverse()                            # oldest-first
+        if self.cfg.max_n:
+            pairs = pairs[:self.cfg.max_n]
+        _LOGGER.info("Full: %d message(s) to process, oldest first "
+                     "(query: %s).", len(pairs), query)
+        self.total = len(pairs)
         self._process(pairs)
         state = self._load_state()
         state["historyId"] = self.gmail.get_profile()["historyId"]
@@ -331,11 +352,16 @@ def _catalog(cfg: EngineConfig, gmail: GmailClient) -> Catalog:
     return cat
 
 
-def run_triage(access_token: str, cfg: EngineConfig, mode: str) -> dict:
+def run_triage(access_token: str, cfg: EngineConfig, mode: str,
+               progress_cb=None) -> dict:
     """One full triage run (called through the executor). Returns stats.
 
     Never raises on LLM downtime: signals it via stats["skipped_reason"] /
     stats["interrupted"] — same semantics as the CLI (incremental catches up).
+
+    progress_cb(done, total): optional, fired per email so the UI can show a
+    live progress percentage. Runs in the executor thread — the caller marshals
+    it back onto the event loop.
     """
     gmail = GmailClient(access_token)
     llm = LLMClient(base_url=cfg.llm_base_url, model=cfg.llm_model,
@@ -347,6 +373,7 @@ def run_triage(access_token: str, cfg: EngineConfig, mode: str) -> dict:
 
     cat = _catalog(cfg, gmail)
     engine = Engine(gmail, llm, cat, cfg)
+    engine.progress_cb = progress_cb
     if not cfg.dry_run:
         engine.prune_logs()
     try:
@@ -491,7 +518,10 @@ def _write_reports(cfg: EngineConfig, records: list[dict],
     name = f"report-{cfg.report_token}.html"
     with open(os.path.join(cfg.report_dir, name), "w", encoding="utf-8") as f:
         f.write(_report_html(doc))
-    return f"/local/polaris/{name}"
+    # Single, stable filename (always overwrites the previous run — no old
+    # reports pile up). The ?v cache-buster makes the browser fetch the fresh
+    # version instead of the cached one (no more Ctrl+F5).
+    return f"/local/polaris/{name}?v={int(dt.datetime.now().timestamp())}"
 
 
 def _esc(s) -> str:
@@ -748,7 +778,7 @@ def _write_suggestions_html(cfg: EngineConfig, suggestions: list[dict],
     }
     with open(os.path.join(cfg.report_dir, name), "w", encoding="utf-8") as f:
         f.write(_suggestions_html(doc))
-    return f"/local/polaris/{name}"
+    return f"/local/polaris/{name}?v={int(dt.datetime.now().timestamp())}"
 
 
 def _email_table(items: list[dict]) -> str:

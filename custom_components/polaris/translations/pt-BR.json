@@ -38,12 +38,13 @@
           "llm_api_key": "API key (opcional)",
           "schedule_enabled": "Executar automaticamente todo dia",
           "schedule_time": "Horário da execução diária",
-          "max_per_run": "Máximo de emails por execução",
+          "max_per_run": "Máximo de emails por execução (0 = sem limite, todo o backlog)",
           "shadow_mode": "Modo sombra (candidatos à Lixeira só recebem label)",
           "use_gmail_labels": "Usar as labels existentes do Gmail como categorias"
         },
         "data_description": {
           "llm_base_url": "Qualquer endpoint compatível com a API da OpenAI (LM Studio, Ollama, vLLM...).",
+          "max_per_run": "Quantos emails cada execução processa. 0 = sem limite: uma execução Completa varre todo o backlog de uma vez (pode demorar — mantenha o modelo carregado).",
           "shadow_mode": "Desligue apenas depois de conferir os candidatos por alguns dias.",
           "use_gmail_labels": "O modelo pode classificar em qualquer label real do seu Gmail, não só nas do categorias.yaml."
         }
@@ -57,6 +58,9 @@
     "sensor": {
       "last_run": {
         "name": "Última execução"
+      },
+      "progress": {
+        "name": "Progresso da execução"
       }
     },
     "button": {
@@ -98,11 +102,11 @@
         },
         "mode": {
           "name": "Modo",
-          "description": "incremental (emails novos) ou full (backlog)."
+          "description": "incremental (só emails novos) ou full (backlog, do email mais antigo primeiro)."
         },
         "max": {
           "name": "Máximo",
-          "description": "Limite de emails nesta execução (padrão: opção da conta)."
+          "description": "Limite de emails nesta execução (padrão: opção da conta). 0 = sem limite (todo o backlog)."
         },
         "dry_run": {
           "name": "Simulação",

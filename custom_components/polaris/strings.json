@@ -38,12 +38,13 @@
           "llm_api_key": "API key (optional)",
           "schedule_enabled": "Run automatically every day",
           "schedule_time": "Daily run time",
-          "max_per_run": "Maximum emails per run",
+          "max_per_run": "Maximum emails per run (0 = no limit, whole backlog)",
           "shadow_mode": "Shadow mode (trash candidates only get a label)",
           "use_gmail_labels": "Use the account's existing Gmail labels as categories"
         },
         "data_description": {
           "llm_base_url": "Any OpenAI-compatible endpoint (LM Studio, Ollama, vLLM...).",
+          "max_per_run": "How many emails each run processes. 0 means no limit: a Full run then sweeps the entire backlog in one go (can be long — keep the model loaded).",
           "shadow_mode": "Turn off only after reviewing the candidates for a few days.",
           "use_gmail_labels": "The model can classify into any of your real Gmail labels, not only the ones in categorias.yaml."
         }
@@ -57,6 +58,9 @@
     "sensor": {
       "last_run": {
         "name": "Last run"
+      },
+      "progress": {
+        "name": "Run progress"
       }
     },
     "button": {
@@ -98,11 +102,11 @@
         },
         "mode": {
           "name": "Mode",
-          "description": "incremental (new emails) or full (backlog)."
+          "description": "incremental (new emails only) or full (backlog, oldest email first)."
         },
         "max": {
           "name": "Maximum",
-          "description": "Email limit for this run (default: account option)."
+          "description": "Email limit for this run (default: account option). 0 = no limit (whole backlog)."
         },
         "dry_run": {
           "name": "Dry run",

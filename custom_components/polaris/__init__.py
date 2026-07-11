@@ -50,6 +50,7 @@ from .const import (
     SERVICE_ACCEPT_CATEGORIES,
     SERVICE_RUN_TRIAGE,
     SERVICE_SUGGEST_CATEGORIES,
+    SIGNAL_PROGRESS,
     SIGNAL_RUN_DONE,
 )
 from .llm_client import LLMUnavailable
@@ -96,6 +97,10 @@ class PolarisAccount:
         self.webhook_id: str = ""
         self.webhook_url: str = ""
         self.last_stats: dict | None = None
+        # live progress of the current run (fed by the engine, read by the sensor)
+        self.progress_pct: int = 0
+        self.progress_done: int = 0
+        self.progress_total: int = 0
         # state set by the UI control entities (select/switch) for the button
         self.ui_mode: str = MODE_INCREMENTAL
         self.ui_dry_run: bool = False
@@ -164,8 +169,11 @@ class PolarisAccount:
             # and unspecified runs are real. Shadow mode still protects trashing.
             dry_run=bool(dry_run),
             reprocess=reprocess,
-            max_n=max_n if max_n is not None
-            else int(o.get(CONF_MAX_PER_RUN, DEFAULT_MAX_PER_RUN)),
+            # 0 (from the option or the service arg) means "no limit" → whole
+            # backlog. `or None` collapses 0 to None, which the engine treats
+            # as unlimited.
+            max_n=(max_n if max_n is not None
+                   else int(o.get(CONF_MAX_PER_RUN, DEFAULT_MAX_PER_RUN))) or None,
             use_gmail_labels_field=o.get(CONF_USE_GMAIL_LABELS, True),
             report_dir=self.report_dir,
             report_token=self.report_token,
@@ -210,8 +218,18 @@ class PolarisAccount:
             cfg = self._cfg(dry_run=dry_run, max_n=max_n, reprocess=reprocess)
             _LOGGER.info("Triage for account %s (mode=%s dry_run=%s max=%s)",
                          self.email, mode, cfg.dry_run, cfg.max_n)
+            self._reset_progress()
+
+            def _on_progress(done: int, total: int) -> None:
+                # runs in the executor thread → hop back onto the loop
+                self.hass.loop.call_soon_threadsafe(
+                    self._set_progress, done, total)
+
             stats = await self.hass.async_add_executor_job(
-                motor.run_triage, token, cfg, mode)
+                motor.run_triage, token, cfg, mode, _on_progress)
+            if not stats.get("skipped_reason") and not stats.get("bootstrap"):
+                self._set_progress(self.progress_total or 1,
+                                   self.progress_total or 1)  # finish at 100%
 
         self.last_stats = stats
         async_dispatcher_send(self.hass,
@@ -219,6 +237,22 @@ class PolarisAccount:
         self.hass.bus.async_fire(EVENT_RUN_COMPLETED,
                                  {"account": self.email, **stats})
         self._notify(stats, cfg.dry_run)
+
+    @callback
+    def _reset_progress(self) -> None:
+        self.progress_pct = self.progress_done = self.progress_total = 0
+        async_dispatcher_send(
+            self.hass, SIGNAL_PROGRESS.format(self.entry.entry_id))
+
+    @callback
+    def _set_progress(self, done: int, total: int) -> None:
+        self.progress_done, self.progress_total = done, total
+        pct = round(done / total * 100) if total else 0
+        if pct == self.progress_pct:
+            return   # throttle: only push when the whole percent changes
+        self.progress_pct = pct
+        async_dispatcher_send(
+            self.hass, SIGNAL_PROGRESS.format(self.entry.entry_id))
 
     def _notify(self, stats: dict, dry_run: bool) -> None:
         nid = f"polaris_summary_{self.entry.entry_id}"

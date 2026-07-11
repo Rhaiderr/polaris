@@ -40,4 +40,5 @@ MODE_FULL = "full"
 
 # ---- post-run signal/event ----
 SIGNAL_RUN_DONE = "polaris_run_done_{}"   # .format(entry_id)
+SIGNAL_PROGRESS = "polaris_progress_{}"   # .format(entry_id) — live run progress
 EVENT_RUN_COMPLETED = "polaris_run_completed"

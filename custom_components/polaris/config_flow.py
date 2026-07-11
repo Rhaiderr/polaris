@@ -145,7 +145,7 @@ class PolarisOptionsFlow(config_entries.OptionsFlow):
                     default=o.get(CONF_MAX_PER_RUN, DEFAULT_MAX_PER_RUN)
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=1, max=500, mode=selector.NumberSelectorMode.BOX
+                        min=0, max=2000, mode=selector.NumberSelectorMode.BOX
                     )
                 ),
                 vol.Required(
