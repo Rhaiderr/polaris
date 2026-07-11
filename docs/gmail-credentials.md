@@ -1,7 +1,5 @@
 # Creating the Gmail OAuth credentials (manual step, ~10 min)
 
-> 🇧🇷 [Versão em português](gerar-credenciais-gmail.md)
-
 Polaris needs a Google OAuth credential to talk to your Gmail account with the
 `gmail.modify` scope (read, apply labels, archive and send to Trash —
 **without** sending email or deleting permanently).
@@ -89,7 +87,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m src.orquestrador --login              # 'principal' account
 # for a named account (or a 2nd account):
-#   python -m src.orquestrador --conta work --login
+#   python -m src.orquestrador --account work --login
 ```
 
 - It prints a URL (it does not open a browser — good for SSH/headless). Open

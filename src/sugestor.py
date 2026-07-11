@@ -212,7 +212,7 @@ def load_json(conta: str, logs_dir: str) -> list[dict]:
     path = os.path.join(logs_dir, conta, "sugestoes.json")
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"{path} does not exist. Run first: --conta {conta} --sugerir-categorias"
+            f"{path} does not exist. Run first: --account {conta} --sugerir-categorias"
         )
     with open(path, encoding="utf-8") as f:
         return json.load(f).get("sugestoes", [])

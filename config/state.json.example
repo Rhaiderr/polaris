@@ -1,5 +1,5 @@
 {
   "historyId": null,
   "ultima_execucao": null,
-  "_comentario": "historyId: cursor da History API do Gmail (preenchido no bootstrap via getProfile). ultima_execucao: ISO-8601 UTC, usado no fallback messages.list after: quando o historyId expira. Este arquivo real (config/state.json) é gitignored."
+  "_comment": "historyId: Gmail History API cursor (set at bootstrap via getProfile). ultima_execucao: ISO-8601 UTC, used by the messages.list after: fallback when historyId expires. The real file (config/state.json) is gitignored."
 }

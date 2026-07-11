@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Polaris">
+  <title>Polaris</title>
+  <defs>
+    <linearGradient id="star" x1="120" y1="80" x2="400" y2="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8ec5ff"/>
+      <stop offset="0.55" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1e40af"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="256" cy="256" r="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#3b82f6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- soft glow -->
+  <circle cx="256" cy="256" r="230" fill="url(#glow)"/>
+
+  <!-- navigation orbit -->
+  <circle cx="256" cy="256" r="228" fill="none" stroke="#3b82f6" stroke-width="4" stroke-opacity="0.30"/>
+
+  <!-- constellation dots -->
+  <circle cx="86"  cy="150" r="7" fill="#8ec5ff" fill-opacity="0.9"/>
+  <circle cx="432" cy="112" r="5" fill="#8ec5ff" fill-opacity="0.8"/>
+  <circle cx="410" cy="430" r="6" fill="#8ec5ff" fill-opacity="0.85"/>
+
+  <!-- diagonal (short) rays -->
+  <path d="M362 150 Q278 256 362 362 Q256 278 150 362 Q234 256 150 150 Q256 234 362 150 Z"
+        fill="url(#star)" fill-opacity="0.82"/>
+
+  <!-- cardinal (long) rays — the North Star -->
+  <path d="M256 40 Q286 226 472 256 Q286 286 256 472 Q226 286 40 256 Q226 226 256 40 Z"
+        fill="url(#star)"/>
+
+  <!-- heart shine -->
+  <circle cx="256" cy="256" r="15" fill="#eef6ff" fill-opacity="0.95"/>
+</svg>

@@ -46,7 +46,7 @@ LOGS_DIR = os.path.join(BASE_DIR, "logs")
 # credentials.json is SHARED; token/categorias/state are per-account.
 CATEGORIES_EXAMPLE = os.path.join(CONFIG_DIR, "categorias.yaml.example")
 LOCK_PATH = os.path.join(LOGS_DIR, ".polaris.lock")
-DEFAULT_ACCOUNT = "principal"   # used with --login when --conta is omitted
+DEFAULT_ACCOUNT = "principal"   # used with --login when --account is omitted
 
 log = logging.getLogger("polaris")
 

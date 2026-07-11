@@ -65,7 +65,7 @@ class GmailClient:
         """1st OAuth login of an account (runs OUTSIDE the container, once).
 
         Writes the token to `token_path` (config/<account>/token.json). Requires
-        the SHARED credentials.json (see docs/gerar-credenciais-gmail.md).
+        the SHARED credentials.json (see docs/gmail-credentials.md).
         Starts a local server on a FIXED port (env OAUTH_PORT, default 8765) and
         does NOT try to open a browser — it prints the consent URL. This works on a
         headless machine / over SSH: just forward the port
@@ -74,7 +74,7 @@ class GmailClient:
         from google_auth_oauthlib.flow import InstalledAppFlow
         if not os.path.exists(credentials_path):
             raise FileNotFoundError(
-                f"Missing {credentials_path}. Follow docs/gerar-credenciais-gmail.md."
+                f"Missing {credentials_path}. Follow docs/gmail-credentials.md."
             )
         os.makedirs(os.path.dirname(token_path), exist_ok=True)
         port = int(os.environ.get("OAUTH_PORT", "8765"))
@@ -102,7 +102,7 @@ class GmailClient:
             else:
                 raise RuntimeError(
                     "No valid OAuth token. Run the 1st login: "
-                    "python -m src.orquestrador --conta <name> --login  (outside the container)."
+                    "python -m src.orquestrador --account <name> --login  (outside the container)."
                 )
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
