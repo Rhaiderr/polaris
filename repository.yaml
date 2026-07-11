@@ -1,7 +1,0 @@
-# Torna este repositório um "add-on repository" do Home Assistant Supervisor.
-# No HA: Configurações → Add-ons → Loja → (⋮) Repositórios →
-#   https://github.com/Rhaiderr/polaris
-# O add-on em si vive em ./addon/ (ver addon/config.yaml).
-name: Polaris
-url: https://github.com/Rhaiderr/polaris
-maintainer: Leonardo Arouck <leonardo.arouck@gmail.com>

@@ -11,7 +11,7 @@ Contrato de retorno (estrito):
   (defesa contra prompt injection).
 - JSON inválido / categoria fora da lista / confiança ausente → cai em Revisar.
 - Os templates abaixo são os PADRÕES: cada conta pode sobrescrevê-los via
-  prompt.yaml (ver carregar_prompt / seed_prompt_yaml) para calibrar o modelo
+  prompt.yaml (ver load_prompt / seed_prompt_yaml) para calibrar o modelo
   ao seu próprio caso de uso.
 """
 from __future__ import annotations
@@ -31,52 +31,54 @@ log = logging.getLogger("polaris")
 
 # ------------------------------------------------------------------ catálogo
 @dataclass
-class Catalogo:
-    nomes: list[str]
-    descricoes: dict[str, str]
-    permitir_exclusao: dict[str, bool]
-    permitir_arquivamento: dict[str, bool]
-    revisar: str
-    label_processado: str
-    label_lixeira_candidata: str
+class Catalog:
+    names: list[str]
+    descriptions: dict[str, str]
+    allow_delete: dict[str, bool]
+    allow_archive: dict[str, bool]
+    review: str
+    label_processed: str
+    label_trash_candidate: str
 
-    def elegivel_exclusao(self, categoria: str) -> bool:
-        return self.permitir_exclusao.get(categoria, False)
+    def eligible_delete(self, category: str) -> bool:
+        return self.allow_delete.get(category, False)
 
-    def elegivel_arquivamento(self, categoria: str) -> bool:
-        # Default True: categorias sem a flag continuam arquiváveis.
-        return self.permitir_arquivamento.get(categoria, True)
+    def eligible_archive(self, category: str) -> bool:
+        # Default True: categories without the flag stay archivable.
+        return self.allow_archive.get(category, True)
 
 
-def carregar_catalogo(path: str) -> Catalogo:
+def load_catalog(path: str) -> Catalog:
+    # NOTE: categorias.yaml keys stay in Portuguese — they are the user's config
+    # schema and mirror the LLM JSON contract.
     with open(path, encoding="utf-8") as f:
-        dados = yaml.safe_load(f)
-    cats = dados["categorias"]
-    internas = dados.get("labels_internas", {})
-    revisar = dados.get("categoria_revisar", "Revisar")
-    nomes = [c["nome"] for c in cats]
-    if revisar not in nomes:
-        nomes.append(revisar)  # Revisar sempre disponível ao modelo
-    return Catalogo(
-        nomes=nomes,
-        descricoes={c["nome"]: c.get("descricao", "") for c in cats},
-        permitir_exclusao={c["nome"]: bool(c.get("permitir_exclusao", False)) for c in cats},
-        permitir_arquivamento={c["nome"]: bool(c.get("arquivar_permitido", True)) for c in cats},
-        revisar=revisar,
-        label_processado=internas.get("processado", "Polaris/Processado"),
-        label_lixeira_candidata=internas.get("lixeira_candidata", "Polaris/Lixeira-candidata"),
+        data = yaml.safe_load(f)
+    cats = data["categorias"]
+    internal = data.get("labels_internas", {})
+    review = data.get("categoria_revisar", "Revisar")
+    names = [c["nome"] for c in cats]
+    if review not in names:
+        names.append(review)  # Review is always available to the model
+    return Catalog(
+        names=names,
+        descriptions={c["nome"]: c.get("descricao", "") for c in cats},
+        allow_delete={c["nome"]: bool(c.get("permitir_exclusao", False)) for c in cats},
+        allow_archive={c["nome"]: bool(c.get("arquivar_permitido", True)) for c in cats},
+        review=review,
+        label_processed=internal.get("processado", "Polaris/Processado"),
+        label_trash_candidate=internal.get("lixeira_candidata", "Polaris/Lixeira-candidata"),
     )
 
 
-# ------------------------------------------------------------- resultado
+# ------------------------------------------------------------- result
 @dataclass
-class Classificacao:
-    categoria: str
-    arquivar: bool
-    excluir: bool
-    confianca: float
-    motivo: str
-    invalido: bool = False  # True quando caiu em Revisar por falha de contrato
+class Classification:
+    category: str
+    archive: bool
+    delete: bool
+    confidence: float
+    reason: str
+    invalid: bool = False  # True when it fell back to Review on contract failure
 
 
 # ------------------------------------------------------------------ prompt
@@ -145,36 +147,36 @@ _PROMPT_HEADER = """\
 """
 
 
-def _bloco_yaml(texto: str) -> str:
-    """Indenta o texto como corpo de bloco YAML (2 espaços; linhas vazias ficam vazias)."""
-    return "\n".join(f"  {ln}" if ln else "" for ln in texto.split("\n"))
+def _bloco_yaml(text: str) -> str:
+    """Indenta o text como corpo de bloco YAML (2 espaços; lines vazias ficam vazias)."""
+    return "\n".join(f"  {ln}" if ln else "" for ln in text.split("\n"))
 
 
 def seed_prompt_yaml(path: str) -> None:
     """Escreve prompt.yaml com os padrões atuais para o usuário ver e editar.
     Os padrões vêm do código, então o arquivo semeado nunca desatualiza."""
-    conteudo = (
+    content = (
         _PROMPT_HEADER
         + "\nsistema: |-\n" + _bloco_yaml(_SYSTEM_TMPL)
         + "\n\nusuario: |-\n" + _bloco_yaml(_USER_TMPL) + "\n"
     )
     with open(path, "w", encoding="utf-8") as f:
-        f.write(conteudo)
+        f.write(content)
 
 
-def carregar_prompt(path: str) -> PromptTemplates:
+def load_prompt(path: str) -> PromptTemplates:
     """Carrega prompt.yaml. Qualquer problema (arquivo ausente, YAML inválido,
     token obrigatório faltando) cai nos padrões — a classificação nunca quebra."""
     try:
         with open(path, encoding="utf-8") as f:
-            dados = yaml.safe_load(f) or {}
+            data = yaml.safe_load(f) or {}
     except FileNotFoundError:
         return DEFAULT_PROMPTS
     except (OSError, yaml.YAMLError) as err:
         log.warning("Não consegui ler prompt.yaml (%s); usando o prompt padrão", err)
         return DEFAULT_PROMPTS
-    system = dados.get("sistema") or _SYSTEM_TMPL
-    user = dados.get("usuario") or _USER_TMPL
+    system = data.get("sistema") or _SYSTEM_TMPL
+    user = data.get("usuario") or _USER_TMPL
     if _TOKEN_OBRIGATORIO not in system:
         log.warning(
             "prompt.yaml sem %s em 'sistema'; usando o sistema padrão para o "
@@ -183,43 +185,43 @@ def carregar_prompt(path: str) -> PromptTemplates:
     return PromptTemplates(system=str(system), user=str(user))
 
 
-def _render(template: str, valores: dict[str, str]) -> str:
+def _render(template: str, values: dict[str, str]) -> str:
     """Preenche {tokens} por substituição simples — tolera YAML editado à mão
     que contenha outras chaves literais (ao contrário de str.format, que quebra)."""
     out = template
-    for chave, valor in valores.items():
-        out = out.replace("{" + chave + "}", valor)
+    for key, value in values.items():
+        out = out.replace("{" + key + "}", value)
     return out
 
 
-def _lista_categorias(cat: Catalogo) -> str:
-    linhas = []
-    for nome in cat.nomes:
-        desc = cat.descricoes.get(nome, "")
-        linhas.append(f"- {nome}: {desc}" if desc else f"- {nome}")
-    return "\n".join(linhas)
+def _category_list(cat: Catalog) -> str:
+    lines = []
+    for name in cat.names:
+        desc = cat.descriptions.get(name, "")
+        lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+    return "\n".join(lines)
 
 
-def montar_prompt(email: EmailMsg, cat: Catalogo,
+def build_prompt(email: EmailMsg, cat: Catalog,
                   prompts: PromptTemplates | None = None) -> tuple[str, str]:
     prompts = prompts or DEFAULT_PROMPTS
     system = _render(prompts.system, {
-        "lista_categorias": _lista_categorias(cat),
-        "revisar": cat.revisar,
+        "lista_categorias": _category_list(cat),
+        "revisar": cat.review,
     })
     user = _render(prompts.user, {
-        "remetente": email.remetente,
-        "assunto": email.assunto,
-        "unsub": "sim" if email.tem_list_unsubscribe else "não",
-        "corpo": email.corpo or "(sem corpo textual)",
+        "remetente": email.sender,
+        "assunto": email.subject,
+        "unsub": "sim" if email.has_list_unsubscribe else "não",
+        "corpo": email.body or "(sem corpo textual)",
     })
     return system, user
 
 
 # ------------------------------------------------------------------ parse
-def _extrair_json(texto: str) -> dict | None:
-    """Extrai o 1º objeto JSON do texto (tolera cercas ```json e ruído em volta)."""
-    t = texto.strip()
+def _extract_json(text: str) -> dict | None:
+    """Extract the first JSON object (tolerates ```json fences and surrounding noise)."""
+    t = text.strip()
     t = re.sub(r"^```(?:json)?", "", t).strip()
     t = re.sub(r"```$", "", t).strip()
     try:
@@ -235,49 +237,51 @@ def _extrair_json(texto: str) -> dict | None:
     return None
 
 
-def _validar(obj: dict, cat: Catalogo) -> Classificacao | None:
-    """Valida o contrato. Retorna None se inválido (chamador cai em Revisar)."""
+def _validate(obj: dict, cat: Catalog) -> Classification | None:
+    """Validate the contract. Returns None when invalid (caller falls back to Review)."""
     if not isinstance(obj, dict):
         return None
-    categoria = obj.get("categoria")
-    if categoria not in cat.nomes:
+    # NOTE: the JSON keys ("categoria", "arquivar", …) stay in Portuguese — they
+    # are the model's response contract, defined by the Portuguese prompt.
+    category = obj.get("categoria")
+    if category not in cat.names:
         return None
     try:
-        confianca = float(obj.get("confianca"))
+        confidence = float(obj.get("confianca"))
     except (TypeError, ValueError):
         return None
-    if not (0.0 <= confianca <= 1.0):
+    if not (0.0 <= confidence <= 1.0):
         return None
-    arquivar = obj.get("arquivar")
-    excluir = obj.get("excluir")
-    if not isinstance(arquivar, bool) or not isinstance(excluir, bool):
+    archive = obj.get("arquivar")
+    delete = obj.get("excluir")
+    if not isinstance(archive, bool) or not isinstance(delete, bool):
         return None
-    motivo = str(obj.get("motivo", ""))[:200]
-    return Classificacao(
-        categoria=categoria,
-        arquivar=arquivar,
-        excluir=excluir,
-        confianca=confianca,
-        motivo=motivo,
+    reason = str(obj.get("motivo", ""))[:200]
+    return Classification(
+        category=category,
+        archive=archive,
+        delete=delete,
+        confidence=confidence,
+        reason=reason,
     )
 
 
-def _revisar(cat: Catalogo, motivo: str) -> Classificacao:
-    return Classificacao(
-        categoria=cat.revisar, arquivar=False, excluir=False,
-        confianca=0.0, motivo=motivo, invalido=True,
+def _to_review(cat: Catalog, reason: str) -> Classification:
+    return Classification(
+        category=cat.review, archive=False, delete=False,
+        confidence=0.0, reason=reason, invalid=True,
     )
 
 
-def classificar(email: EmailMsg, cat: Catalogo, llm: LLMClient,
-                prompts: PromptTemplates | None = None) -> Classificacao:
-    """Classifica um email. Falha de contrato → Revisar (nunca arquiva/exclui)."""
-    system, user = montar_prompt(email, cat, prompts)
-    resposta = llm.chat(system, user)  # LLMIndisponivel sobe para o orquestrador
-    obj = _extrair_json(resposta)
+def classify(email: EmailMsg, cat: Catalog, llm: LLMClient,
+             prompts: PromptTemplates | None = None) -> Classification:
+    """Classify one email. Contract failure → Review (never archives/trashes)."""
+    system, user = build_prompt(email, cat, prompts)
+    response = llm.chat(system, user)  # LLMUnavailable bubbles up to the orchestrator
+    obj = _extract_json(response)
     if obj is None:
-        return _revisar(cat, "JSON inválido na resposta do modelo")
-    resultado = _validar(obj, cat)
-    if resultado is None:
-        return _revisar(cat, "contrato JSON inválido (categoria/campos)")
-    return resultado
+        return _to_review(cat, "invalid JSON in the model response")
+    result = _validate(obj, cat)
+    if result is None:
+        return _to_review(cat, "invalid JSON contract (category/fields)")
+    return result

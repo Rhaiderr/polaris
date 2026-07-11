@@ -23,16 +23,16 @@ class EmailMsg:
     """Lean view of a message, ready for the classifier."""
     id: str
     thread_id: str
-    remetente: str = ""
-    assunto: str = ""
-    destinatario: str = ""
-    data: str = ""
-    tem_list_unsubscribe: bool = False   # deterministic signal for trashing
-    corpo: str = ""                       # text (untrusted — LLM input)
+    sender: str = ""
+    subject: str = ""
+    recipient: str = ""
+    date: str = ""
+    has_list_unsubscribe: bool = False   # deterministic signal for trashing
+    body: str = ""                        # text (untrusted — LLM input)
     label_ids: list[str] = field(default_factory=list)
 
 
-class HistoryExpirada(Exception):
+class HistoryExpired(Exception):
     """startHistoryId too old (Gmail returned 404). Caller uses the fallback."""
 
 
@@ -48,7 +48,7 @@ class GmailClient:
              allow_404: bool = False) -> dict:
         r = self.session.get(f"{API}{path}", params=params, timeout=self.timeout)
         if allow_404 and r.status_code == 404:
-            raise HistoryExpirada()
+            raise HistoryExpired()
         r.raise_for_status()
         return r.json()
 
@@ -63,7 +63,7 @@ class GmailClient:
         return self._get("/profile")
 
     # --------------------------------------------------------------- labels
-    def _carregar_labels(self) -> dict[str, str]:
+    def _load_labels(self) -> dict[str, str]:
         if self._labels_cache is None:
             resp = self._get("/labels")
             self._labels_cache = {l["name"]: l["id"] for l in resp.get("labels", [])}
@@ -77,9 +77,9 @@ class GmailClient:
         return [l["name"] for l in resp.get("labels", [])
                 if l.get("type") == "user"]
 
-    def garantir_label(self, nome: str) -> str:
+    def ensure_label(self, nome: str) -> str:
         """Return the label id, creating the label if missing ('/' nests)."""
-        cache = self._carregar_labels()
+        cache = self._load_labels()
         if nome in cache:
             return cache[nome]
         criada = self._post("/labels", {
@@ -95,7 +95,7 @@ class GmailClient:
         """IDs of messages ADDED since start_history_id.
 
         Returns (list of {'id','threadId'}, new_history_id).
-        Raises HistoryExpirada (404) when the cursor is too old — the caller
+        Raises HistoryExpired (404) when the cursor is too old — the caller
         falls back to messages.list (see motor).
         historyTypes=messageAdded avoids reprocessing Polaris' own actions.
         """
@@ -155,7 +155,7 @@ class GmailClient:
         raw = self._get(f"/messages/{msg_id}", {"format": "full"})
         return self._parse_email(raw)
 
-    def contar_mensagens_thread(self, thread_id: str) -> int:
+    def count_thread_messages(self, thread_id: str) -> int:
         """Message count in the thread (rule: archive/trash only single-message threads)."""
         t = self._get(f"/threads/{thread_id}", {"format": "minimal"})
         return len(t.get("messages", []))
@@ -164,21 +164,21 @@ class GmailClient:
     def _parse_email(raw: dict) -> EmailMsg:
         payload = raw.get("payload", {})
         headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
-        corpo = GmailClient._extrair_corpo(payload)
+        body = GmailClient._extract_body(payload)
         return EmailMsg(
             id=raw["id"],
             thread_id=raw.get("threadId", ""),
-            remetente=headers.get("from", ""),
-            assunto=headers.get("subject", ""),
-            destinatario=headers.get("to", ""),
-            data=headers.get("date", ""),
-            tem_list_unsubscribe="list-unsubscribe" in headers,
-            corpo=corpo,
+            sender=headers.get("from", ""),
+            subject=headers.get("subject", ""),
+            recipient=headers.get("to", ""),
+            date=headers.get("date", ""),
+            has_list_unsubscribe="list-unsubscribe" in headers,
+            body=body,
             label_ids=raw.get("labelIds", []),
         )
 
     @staticmethod
-    def _extrair_corpo(payload: dict, limite: int = 4000) -> str:
+    def _extract_body(payload: dict, limite: int = 4000) -> str:
         """Extract text from text/plain (preferred) or text/html, recursing into multipart."""
         def decode(data: str) -> str:
             return base64.urlsafe_b64decode(data.encode()).decode("utf-8", "replace")
@@ -196,15 +196,15 @@ class GmailClient:
                         return decode(p["body"]["data"])[:limite]
             # nested multipart
             for p in partes:
-                texto = GmailClient._extrair_corpo(p, limite)
-                if texto:
-                    return texto
+                text = GmailClient._extract_body(p, limite)
+                if text:
+                    return text
         if mime == "text/html" and body.get("data"):
             return decode(body["data"])[:limite]
         return ""
 
     # -------------------------------------------------------- mutations
-    def modificar(
+    def modify(
         self, msg_id: str, add: list[str] | None = None, remove: list[str] | None = None
     ) -> None:
         self._post(f"/messages/{msg_id}/modify",

@@ -52,7 +52,7 @@ from .const import (
     SERVICE_SUGGEST_CATEGORIES,
     SIGNAL_RUN_DONE,
 )
-from .llm_client import LLMIndisponivel
+from .llm_client import LLMUnavailable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -152,9 +152,9 @@ class PolarisAccount:
 
     # ------------------------------------------------------------- config
     def _cfg(self, dry_run: bool | None = None, max_n: int | None = None,
-             reprocess: bool = False) -> motor.MotorConfig:
+             reprocess: bool = False) -> motor.EngineConfig:
         o = self.entry.options
-        return motor.MotorConfig(
+        return motor.EngineConfig(
             account_dir=self.account_dir,
             llm_base_url=o.get(CONF_LLM_BASE_URL, ""),
             llm_model=o.get(CONF_LLM_MODEL, ""),
@@ -211,7 +211,7 @@ class PolarisAccount:
             _LOGGER.info("Triage for account %s (mode=%s dry_run=%s max=%s)",
                          self.email, mode, cfg.dry_run, cfg.max_n)
             stats = await self.hass.async_add_executor_job(
-                motor.executar, token, cfg, mode)
+                motor.run_triage, token, cfg, mode)
 
         self.last_stats = stats
         async_dispatcher_send(self.hass,
@@ -269,8 +269,8 @@ class PolarisAccount:
             cfg = self._cfg()
             try:
                 res = await self.hass.async_add_executor_job(
-                    motor.rodar_sugestor, token, cfg, max_n)
-            except LLMIndisponivel as err:
+                    motor.run_suggestor, token, cfg, max_n)
+            except LLMUnavailable as err:
                 persistent_notification.async_create(
                     self.hass,
                     f"Account **{self.email}**: the model did not respond "
@@ -284,10 +284,10 @@ class PolarisAccount:
             corpo = (f"Account **{self.email}**: nothing new to suggest — "
                      "the current categories already cover the mailbox.")
         else:
-            nomes = ", ".join(s["nome"] for s in sugestoes)
+            names = ", ".join(s["nome"] for s in sugestoes)
             corpo = (
                 f"Account **{self.email}**: {len(sugestoes)} new category(ies) "
-                f"suggested — {nomes}."
+                f"suggested — {names}."
             )
             if link:
                 corpo += (
@@ -304,15 +304,15 @@ class PolarisAccount:
 
     async def async_accept(self, numbers: str) -> list[str]:
         token = await self._token()   # autonomy: create the Gmail labels now
-        nomes = await self.hass.async_add_executor_job(
-            motor.aceitar_sugestoes, self.account_dir, numbers, token)
-        corpo = (f"Account **{self.email}**: {len(nomes)} category(ies) "
-                 f"added and created in Gmail: {', '.join(nomes)}." if nomes
+        names = await self.hass.async_add_executor_job(
+            motor.accept_suggestions, self.account_dir, numbers, token)
+        corpo = (f"Account **{self.email}**: {len(names)} category(ies) "
+                 f"added and created in Gmail: {', '.join(names)}." if names
                  else f"Account **{self.email}**: nothing to accept.")
         persistent_notification.async_create(
             self.hass, corpo, title="Polaris — categories",
             notification_id=f"polaris_suggest_{self.entry.entry_id}")
-        return nomes
+        return names
 
 
 # ---------------------------------------------------------------- webhook

@@ -18,10 +18,10 @@ import os
 from dataclasses import dataclass, field
 
 # NB: as bibliotecas do Google são importadas de forma LAZY (dentro dos métodos
-# que as usam). Assim, importar este módulo só para EmailMsg/HistoryExpirada
+# que as usam). Assim, importar este módulo só para EmailMsg/HistoryExpired
 # (ex.: no sanity check offline tests/dry_run.py) não exige o pacote instalado.
 
-# Escopo mínimo: ler + modificar (label/archive/trash). NÃO inclui delete nem send.
+# Escopo mínimo: ler + modify (label/archive/trash). NÃO inclui delete nem send.
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
@@ -32,15 +32,15 @@ CREDENTIALS_PATH = os.path.join(CONFIG_DIR, "credentials.json")
 
 @dataclass
 class EmailMsg:
-    """Visão enxuta de uma mensagem, pronta para o classificador."""
+    """Lean view of a message, ready for the classifier."""
     id: str
     thread_id: str
-    remetente: str = ""
-    assunto: str = ""
-    destinatario: str = ""
-    data: str = ""
-    tem_list_unsubscribe: bool = False   # sinal determinístico p/ exclusão
-    corpo: str = ""                       # texto (não confiável — entrada do LLM)
+    sender: str = ""
+    subject: str = ""
+    recipient: str = ""
+    date: str = ""
+    has_list_unsubscribe: bool = False   # deterministic signal for trashing
+    body: str = ""                        # text (untrusted — LLM input)
     label_ids: list[str] = field(default_factory=list)
 
 
@@ -60,7 +60,7 @@ class GmailClient:
         return None
 
     @classmethod
-    def autenticar_interativo(cls, token_path: str,
+    def authenticate_interactive(cls, token_path: str,
                               credentials_path: str = CREDENTIALS_PATH) -> None:
         """1º login OAuth de uma conta (roda FORA do container, 1 vez).
 
@@ -112,15 +112,15 @@ class GmailClient:
         return self.service.users().getProfile(userId="me").execute()
 
     # --------------------------------------------------------------- labels
-    def _carregar_labels(self) -> dict[str, str]:
+    def _load_labels(self) -> dict[str, str]:
         if self._labels_cache is None:
             resp = self.service.users().labels().list(userId="me").execute()
             self._labels_cache = {l["name"]: l["id"] for l in resp.get("labels", [])}
         return self._labels_cache
 
-    def garantir_label(self, nome: str) -> str:
+    def ensure_label(self, nome: str) -> str:
         """Retorna o id da label, criando-a se não existir (aninhamento por '/')."""
-        cache = self._carregar_labels()
+        cache = self._load_labels()
         if nome in cache:
             return cache[nome]
         criada = (
@@ -144,7 +144,7 @@ class GmailClient:
         """IDs de mensagens ADICIONADAS desde start_history_id.
 
         Retorna (lista de {'id','threadId'}, novo_history_id).
-        Levanta HistoryExpirada (404) quando o cursor é antigo demais — o
+        Levanta HistoryExpired (404) quando o cursor é antigo demais — o
         chamador cai no fallback messages.list (ver orquestrador).
         historyTypes=messageAdded evita reprocessar as ações do próprio Polaris.
         """
@@ -179,7 +179,7 @@ class GmailClient:
                     break
         except HttpError as e:
             if e.resp.status == 404:
-                raise HistoryExpirada() from e
+                raise HistoryExpired() from e
             raise
         return list(msgs.values()), novo_hid
 
@@ -228,7 +228,7 @@ class GmailClient:
         )
         return self._parse_email(raw)
 
-    def contar_mensagens_thread(self, thread_id: str) -> int:
+    def count_thread_messages(self, thread_id: str) -> int:
         """Nº de mensagens na thread (regra: arquivar/trash só em thread única)."""
         t = (
             self.service.users()
@@ -242,22 +242,22 @@ class GmailClient:
     def _parse_email(raw: dict) -> EmailMsg:
         payload = raw.get("payload", {})
         headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
-        corpo = GmailClient._extrair_corpo(payload)
+        body = GmailClient._extract_body(payload)
         return EmailMsg(
             id=raw["id"],
             thread_id=raw.get("threadId", ""),
-            remetente=headers.get("from", ""),
-            assunto=headers.get("subject", ""),
-            destinatario=headers.get("to", ""),
-            data=headers.get("date", ""),
-            tem_list_unsubscribe="list-unsubscribe" in headers,
-            corpo=corpo,
+            sender=headers.get("from", ""),
+            subject=headers.get("subject", ""),
+            recipient=headers.get("to", ""),
+            date=headers.get("date", ""),
+            has_list_unsubscribe="list-unsubscribe" in headers,
+            body=body,
             label_ids=raw.get("labelIds", []),
         )
 
     @staticmethod
-    def _extrair_corpo(payload: dict, limite: int = 4000) -> str:
-        """Extrai texto de text/plain (preferido) ou text/html, recursivo em multipart."""
+    def _extract_body(payload: dict, limite: int = 4000) -> str:
+        """Extrai text de text/plain (preferido) ou text/html, recursivo em multipart."""
         def decode(data: str) -> str:
             return base64.urlsafe_b64decode(data.encode()).decode("utf-8", "replace")
 
@@ -274,15 +274,15 @@ class GmailClient:
                         return decode(p["body"]["data"])[:limite]
             # multipart aninhado
             for p in partes:
-                texto = GmailClient._extrair_corpo(p, limite)
-                if texto:
-                    return texto
+                text = GmailClient._extract_body(p, limite)
+                if text:
+                    return text
         if mime == "text/html" and body.get("data"):
             return decode(body["data"])[:limite]
         return ""
 
     # -------------------------------------------------------- modificações
-    def modificar(
+    def modify(
         self, msg_id: str, add: list[str] | None = None, remove: list[str] | None = None
     ) -> None:
         self.service.users().messages().modify(
@@ -312,5 +312,5 @@ class GmailClient:
         self.service.users().messages().trash(userId="me", id=msg_id).execute()
 
 
-class HistoryExpirada(Exception):
+class HistoryExpired(Exception):
     """startHistoryId antigo demais (Gmail retornou 404). Chamador usa fallback."""

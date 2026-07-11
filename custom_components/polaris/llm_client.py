@@ -14,7 +14,7 @@ from __future__ import annotations
 import requests
 
 
-class LLMIndisponivel(Exception):
+class LLMUnavailable(Exception):
     """The endpoint did not respond. The runtime treats it as 'skip the run'."""
 
 
@@ -38,7 +38,7 @@ class LLMClient:
             raise ValueError("The LLM endpoint and model are required "
                              "(set them in the integration options).")
 
-    def disponivel(self) -> bool:
+    def available(self) -> bool:
         """Cheap ping: lists models. False when the endpoint is down."""
         try:
             r = requests.get(f"{self.base_url}/models", headers=self._headers(), timeout=5)
@@ -55,7 +55,7 @@ class LLMClient:
     def chat(self, system: str, user: str) -> str:
         """One system+user round. Returns the raw response text.
 
-        Raises LLMIndisponivel on connection errors/timeouts — the runtime
+        Raises LLMUnavailable on connection errors/timeouts — the runtime
         skips the run (the incremental mode catches up next time).
         """
         payload = {
@@ -76,8 +76,8 @@ class LLMClient:
                 timeout=self.timeout,
             )
         except requests.RequestException as e:
-            raise LLMIndisponivel(str(e)) from e
+            raise LLMUnavailable(str(e)) from e
         if r.status_code != 200:
-            raise LLMIndisponivel(f"HTTP {r.status_code}: {r.text[:200]}")
+            raise LLMUnavailable(f"HTTP {r.status_code}: {r.text[:200]}")
         data = r.json()
         return data["choices"][0]["message"]["content"]

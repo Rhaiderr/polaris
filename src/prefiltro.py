@@ -1,8 +1,8 @@
-"""Pré-filtro barato (opcional) — heurísticas antes de gastar o LLM.
+"""Cheap optional pre-filter — heuristics before spending LLM calls.
 
-Ideia emprestada do cascade de projetos de triagem: evita chamar o modelo
-para casos óbvios/baratos. Conservador de propósito — na dúvida, deixa passar
-para o LLM decidir. NUNCA decide exclusão aqui (isso exige o modelo + sinais).
+Cascade idea borrowed from triage projects: avoids calling the model for
+obvious/cheap cases. Deliberately conservative — when in doubt, let the LLM
+decide. NEVER decides trashing here (that requires the model + signals).
 """
 from __future__ import annotations
 
@@ -12,19 +12,19 @@ from .gmail_client import EmailMsg
 
 
 @dataclass
-class Prefiltragem:
-    pular_llm: bool          # se True, usa 'categoria' direto sem chamar o modelo
-    categoria: str | None = None
-    confianca: float = 0.0
-    motivo: str = ""
+class Prefilter:
+    skip_llm: bool          # if True, use 'category' directly without calling the model
+    category: str | None = None
+    confidence: float = 0.0
+    reason: str = ""
 
 
-def aplicar(email: EmailMsg) -> Prefiltragem:
-    """Retorna Prefiltragem. Por padrão, não pula (deixa o LLM classificar).
+def apply(email: EmailMsg) -> Prefilter:
+    """Returns Prefilter. By default it does not skip (LLM classifies).
 
-    Mantido minimalista de propósito: heurísticas frágeis geram erro silencioso.
-    Só marca casos muito seguros. Expandir com evidência dos logs (Fase 5).
+    Kept minimal on purpose: fragile heuristics produce silent errors.
+    Only flag very safe cases. Expand with evidence from the logs.
     """
-    # Placeholder conservador: hoje sempre delega ao LLM.
-    # (Gancho pronto para, no futuro, atalhar ex.: remetentes conhecidos.)
-    return Prefiltragem(pular_llm=False)
+    # Conservative placeholder: currently always delegates to the LLM.
+    # (Hook ready to short-circuit e.g. known senders in the future.)
+    return Prefilter(skip_llm=False)

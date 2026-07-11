@@ -12,19 +12,19 @@ from .gmail_client import EmailMsg
 
 
 @dataclass
-class Prefiltragem:
-    pular_llm: bool          # if True, use 'categoria' directly without calling the model
-    categoria: str | None = None
-    confianca: float = 0.0
-    motivo: str = ""
+class Prefilter:
+    skip_llm: bool          # if True, use 'category' directly without calling the model
+    category: str | None = None
+    confidence: float = 0.0
+    reason: str = ""
 
 
-def aplicar(email: EmailMsg) -> Prefiltragem:
-    """Returns Prefiltragem. By default it does not skip (LLM classifies).
+def apply(email: EmailMsg) -> Prefilter:
+    """Returns Prefilter. By default it does not skip (LLM classifies).
 
     Kept minimal on purpose: fragile heuristics produce silent errors.
     Only flag very safe cases. Expand with evidence from the logs.
     """
     # Conservative placeholder: currently always delegates to the LLM.
     # (Hook ready to short-circuit e.g. known senders in the future.)
-    return Prefiltragem(pular_llm=False)
+    return Prefilter(skip_llm=False)

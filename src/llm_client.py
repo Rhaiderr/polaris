@@ -4,7 +4,7 @@ Genérico por design: funciona com LM Studio, Ollama, llama.cpp, vLLM,
 OpenRouter, OpenAI, etc. O código NUNCA menciona um provedor específico —
 tudo vem de LLM_BASE_URL / LLM_MODEL / LLM_API_KEY no ambiente.
 
-Sem tool-calling (o contrato é JSON no texto — ver classificador), porque
+Sem tool-calling (o contrato é JSON no text — ver classificador), porque
 tool-calling é justamente o que falha em vários modelos locais.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import os
 import requests
 
 
-class LLMIndisponivel(Exception):
+class LLMUnavailable(Exception):
     """O endpoint não respondeu. O orquestrador trata como 'pular execução'."""
 
 
@@ -40,7 +40,7 @@ class LLMClient:
         if not self.base_url or not self.model:
             raise ValueError("LLM_BASE_URL e LLM_MODEL são obrigatórios (ver .env).")
 
-    def disponivel(self) -> bool:
+    def available(self) -> bool:
         """Ping barato: lista modelos. False se o endpoint não está de pé."""
         try:
             r = requests.get(f"{self.base_url}/models", headers=self._headers(), timeout=5)
@@ -55,9 +55,9 @@ class LLMClient:
         return h
 
     def chat(self, system: str, user: str) -> str:
-        """Uma rodada system+user. Retorna o texto da resposta (bruto).
+        """Uma rodada system+user. Retorna o text da response (bruto).
 
-        Levanta LLMIndisponivel em erro de conexão/timeout — o orquestrador
+        Levanta LLMUnavailable em erro de conexão/timeout — o orquestrador
         decide pular a execução (o incremental recupera na próxima rodada).
         """
         payload = {
@@ -78,8 +78,8 @@ class LLMClient:
                 timeout=self.timeout,
             )
         except requests.RequestException as e:
-            raise LLMIndisponivel(str(e)) from e
+            raise LLMUnavailable(str(e)) from e
         if r.status_code != 200:
-            raise LLMIndisponivel(f"HTTP {r.status_code}: {r.text[:200]}")
+            raise LLMUnavailable(f"HTTP {r.status_code}: {r.text[:200]}")
         data = r.json()
         return data["choices"][0]["message"]["content"]
