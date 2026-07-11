@@ -463,6 +463,8 @@ background:#e5e9f0;color:#1c2430;border:0;cursor:pointer;user-select:none}
 background:#fff;border:1px solid #e3e6ec;border-radius:10px;padding:10px 12px;margin:12px 0}
 .controls input,.controls select{padding:7px 10px;border:1px solid #d7dbe3;
 border-radius:8px;font-size:14px}
+.btn{padding:7px 12px;border:0;border-radius:8px;background:#2b6cb0;color:#fff;
+font-size:13px;font-weight:600;cursor:pointer}
 #q{flex:1;min-width:180px} #conf{width:70px}
 .controls .cf{font-size:13px;color:#6b7484;display:flex;align-items:center;gap:6px}
 .controls .hint{font-size:12px;color:#98a1b0;flex-basis:100%}
@@ -514,6 +516,28 @@ _REPORT_JS = """
     var a=ch.getAttribute('data-action');
     off[a]=!off[a]; ch.classList.toggle('off',!!off[a]); apply();
   });});
+  var DEST={trash:'Lixeira',shadow:'Candidato a Lixeira',archive:'Arquivado',
+            review:'Revisar',label:'Rotulado'};
+  function cell(s){s=(s==null?'':''+s);
+    return /[",\\n;]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}
+  document.getElementById('csv').addEventListener('click',function(){
+    var rows=[['Destino','Assunto','Remetente','Categoria','Confianca','Motivo']];
+    secs.forEach(function(sec){
+      if(sec.style.display==='none')return;
+      var d=DEST[sec.getAttribute('data-action')]||sec.getAttribute('data-action');
+      [].slice.call(sec.querySelectorAll('tbody tr')).forEach(function(tr){
+        if(tr.style.display==='none')return;
+        var c=tr.children;
+        rows.push([d,c[0].textContent,c[1].textContent,c[2].textContent,
+                   c[3].textContent,c[4].textContent]);
+      });
+    });
+    var csv='\\ufeff'+rows.map(function(r){return r.map(cell).join(',');}).join('\\n');
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    a.download='polaris-relatorio.csv';document.body.appendChild(a);a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},100);
+  });
   document.querySelectorAll('th[data-sort]').forEach(function(th){
     th.addEventListener('click',function(){
       var table=th.closest('table'), tb=table.querySelector('tbody'),
@@ -588,7 +612,9 @@ def _html_relatorio(doc: dict) -> str:
         f'<select id="cat"><option value="__all__">Todas as categorias</option>{cat_opts}</select>'
         '<label class="cf">Conf. mín. '
         '<input id="conf" type="number" min="0" max="1" step="0.05" value="0"></label>'
-        '<span class="hint">clique nas caixas p/ mostrar/ocultar · clique no cabeçalho p/ ordenar</span>'
+        '<button type="button" id="csv" class="btn">⬇ Baixar CSV</button>'
+        '<span class="hint">clique nas caixas p/ mostrar/ocultar · clique no cabeçalho '
+        'p/ ordenar · o CSV baixa o que estiver visível (após os filtros)</span>'
         '</div>'
     )
     corpo = "".join(secoes) or '<p>Nada processado nesta execução.</p>'
