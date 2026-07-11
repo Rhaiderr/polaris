@@ -289,11 +289,23 @@ class Orchestrator:
         self._save_state(state)
 
     def full(self) -> None:
+        """Backlog sweep, OLDEST message first.
+
+        Gmail's messages.list only returns newest-first, so we fetch every
+        unprocessed id (cheap: id+threadId only), reverse to oldest-first and
+        then keep at most max_n. Repeated 'full' runs therefore march through
+        the whole mailbox from the beginning, converging on a fully reviewed
+        inbox. max_n falsy (None/0) = no limit → the entire backlog in one run.
+        """
         query = "-in:chats"
         if not self.reprocessar:
             query += f' -label:"{self.cat.label_processed}"'
-        pairs = self.gmail.messages_list(query, max_results=self.max_n)
-        log.info("Full: %d candidate message(s) (query: %s).", len(pairs), query)
+        pairs = self.gmail.messages_list(query)   # all matches, newest-first
+        pairs.reverse()                            # oldest-first
+        if self.max_n:
+            pairs = pairs[:self.max_n]
+        log.info("Full: %d message(s) to process, oldest first (query: %s).",
+                 len(pairs), query)
         self._process(pairs)
         state = self._load_state()
         state["historyId"] = self.gmail.get_profile()["historyId"]
@@ -525,7 +537,8 @@ def main(argv=None) -> int:
     ap.add_argument("--reprocessar", action="store_true",
                     help="do not skip messages already marked Polaris/Processado")
     ap.add_argument("--max", type=int, default=None, dest="max_n",
-                    help="limit how many messages to process")
+                    help="limit how many messages to process (0 = no limit, "
+                         "whole backlog). 'completo' processes oldest first.")
     ap.add_argument("--login", action="store_true",
                     help="add/re-authenticate an account (OAuth login) and exit")
     ap.add_argument("--sugerir-categorias", action="store_true", dest="sugerir",
