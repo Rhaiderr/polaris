@@ -18,7 +18,6 @@ from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow, selector
 
 from .const import (
-    CONF_DRY_RUN,
     CONF_LLM_API_KEY,
     CONF_LLM_BASE_URL,
     CONF_LLM_MODEL,
@@ -150,9 +149,6 @@ class PolarisOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Required(
                     CONF_SHADOW_MODE, default=o.get(CONF_SHADOW_MODE, True)
-                ): selector.BooleanSelector(),
-                vol.Required(
-                    CONF_DRY_RUN, default=o.get(CONF_DRY_RUN, False)
                 ): selector.BooleanSelector(),
             }
         )

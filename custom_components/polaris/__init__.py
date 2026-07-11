@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from aiohttp.client_exceptions import ClientError, ClientResponseError
 import voluptuous as vol
@@ -31,7 +32,6 @@ from .const import (
     ATTR_MODE,
     ATTR_NUMBERS,
     ATTR_REPROCESS,
-    CONF_DRY_RUN,
     CONF_LLM_API_KEY,
     CONF_LLM_BASE_URL,
     CONF_LLM_MODEL,
@@ -54,7 +54,7 @@ from .llm_client import LLMIndisponivel
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BUTTON, Platform.SENSOR]
+PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR, Platform.SWITCH]
 
 # One run at a time across ALL accounts (equivalent to the CLI flock):
 # avoids two triage runs competing for the same LLM endpoint.
@@ -88,13 +88,28 @@ class PolarisAccount:
         self.session = session
         self.email: str = entry.unique_id or entry.title
         self.account_dir: str = hass.config.path(DOMAIN, self.email)
+        self.report_dir: str = hass.config.path("www", DOMAIN)
+        self.report_token: str = ""
         self.last_stats: dict | None = None
+        # state set by the UI control entities (select/switch) for the button
+        self.ui_mode: str = MODE_INCREMENTAL
+        self.ui_dry_run: bool = False
         self._unsub_schedule = None
 
     # ------------------------------------------------------------- setup
     def prepare(self) -> None:
-        """(executor) Create the account dir + initial categorias.yaml."""
+        """(executor) Create the account dir + initial categorias.yaml +
+        the report token (unguessable filename component for the HTML report)."""
         motor.prepare_account_dir(self.account_dir)
+        import secrets
+        tok_path = os.path.join(self.account_dir, ".report_token")
+        if os.path.exists(tok_path):
+            self.report_token = open(tok_path, encoding="utf-8").read().strip()
+        if not self.report_token:
+            self.report_token = secrets.token_urlsafe(12)
+            with open(tok_path, "w", encoding="utf-8") as f:
+                f.write(self.report_token)
+        os.makedirs(self.report_dir, exist_ok=True)
 
     def schedule(self) -> None:
         opts = self.entry.options
@@ -131,10 +146,14 @@ class PolarisAccount:
             llm_model=o.get(CONF_LLM_MODEL, ""),
             llm_api_key=o.get(CONF_LLM_API_KEY, ""),
             shadow_mode=o.get(CONF_SHADOW_MODE, True),
-            dry_run=o.get(CONF_DRY_RUN, False) if dry_run is None else dry_run,
+            # simulation is a per-run choice (UI switch / service arg); scheduled
+            # and unspecified runs are real. Shadow mode still protects trashing.
+            dry_run=bool(dry_run),
             reprocess=reprocess,
             max_n=max_n if max_n is not None
             else int(o.get(CONF_MAX_PER_RUN, DEFAULT_MAX_PER_RUN)),
+            report_dir=self.report_dir,
+            report_token=self.report_token,
         )
 
     def _endpoint_configured(self) -> bool:
@@ -216,6 +235,8 @@ class PolarisAccount:
         )
         if stats.get("interrupted"):
             corpo += " ⚠️ The model went down mid-run; the next run continues."
+        if stats.get("report_link"):
+            corpo += f"\n\n📄 [Ver relatório completo]({stats['report_link']})"
         persistent_notification.async_create(
             self.hass, corpo, title="Polaris — triage summary",
             notification_id=nid)

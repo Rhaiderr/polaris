@@ -56,6 +56,8 @@ class MotorConfig:
     dry_run: bool = False
     reprocess: bool = False
     max_n: int | None = None
+    report_dir: str = ""      # /config/www/polaris (for the servable HTML report)
+    report_token: str = ""    # unguessable filename component for the report
 
 
 def prepare_account_dir(account_dir: str) -> None:
@@ -130,6 +132,7 @@ class Motor:
         self.state_path = os.path.join(cfg.account_dir, "state.json")
         self.decisions_path = os.path.join(cfg.account_dir, "decisions.jsonl")
         self._label_id_cache: dict[str, str] = {}
+        self.registros: list[dict] = []   # accumulated for the per-run report
         self.stats = {"seen": 0, "processed": 0, "skipped": 0,
                       "review": 0, "archive": 0, "trash": 0,
                       "shadow": 0, "label": 0}
@@ -215,8 +218,10 @@ class Motor:
             "trash": cls.excluir,
             "reason": cls.motivo,
             "action": plano.acao,
+            "destino": _destino(plano, self.cat),
             "dry_run": self.cfg.dry_run,
         }
+        self.registros.append(registro)   # always, for the per-run report
         if self.cfg.dry_run:
             _LOGGER.info("[DRY] %s → %s [cat=%s conf=%.2f trash=%s unsub=%s] %s",
                          (email.assunto or "(no subject)")[:50], plano.acao,
@@ -323,6 +328,13 @@ def executar(access_token: str, cfg: MotorConfig, mode: str) -> dict:
                         "run catches up.", e)
         motor.stats["interrupted"] = "llm_unavailable"
     motor.stats["last_run"] = _now_iso()
+    # per-run report (any mode): last-run.json + servable HTML, link in stats
+    try:
+        link = _escrever_relatorios(cfg, motor.registros, motor.stats, mode)
+        if link:
+            motor.stats["report_link"] = link
+    except Exception:  # noqa: BLE001 — report is best-effort, never fail the run
+        _LOGGER.exception("Failed to write the run report")
     return motor.stats
 
 
@@ -356,6 +368,150 @@ def aceitar_sugestoes(account_dir: str, numbers: str) -> list[str]:
         sugestor.aplicar_aceites(
             os.path.join(account_dir, "categorias.yaml"), aceitas)
     return [a["nome"] for a in aceitas]
+
+
+# ------------------------------------------------------------------ report
+# Human-readable destination + presentation order/style, per action.
+_ACOES = {
+    "trash":   ("🗑️", "Enviados para a Lixeira", "trash"),
+    "shadow":  ("🌓", "Candidatos à Lixeira (modo sombra)", "shadow"),
+    "archive": ("📥", "Arquivados (fora da Caixa de Entrada)", "archive"),
+    "review":  ("👀", "Para revisar", "review"),
+    "label":   ("🏷️", "Apenas rotulados (seguem na Caixa de Entrada)", "label"),
+}
+_ORDEM = ["trash", "shadow", "archive", "review", "label"]
+
+
+def _destino(plano: "Plano", cat: Catalogo) -> str:
+    """Frase curta de 'onde foi parar', para o relatório."""
+    if plano.acao == "trash":
+        return "Lixeira"
+    if plano.acao == "shadow":
+        return f"Caixa de Entrada + label “{cat.label_lixeira_candidata}”"
+    if plano.acao == "archive":
+        cat_label = next((n for n in plano.add_labels
+                          if n not in (cat.label_processado,)), "")
+        return f"Arquivado sob “{cat_label}”" if cat_label else "Arquivado"
+    if plano.acao == "review":
+        return f"Caixa de Entrada + label “{cat.revisar}”"
+    cat_label = next((n for n in plano.add_labels
+                      if n != cat.label_processado), "")
+    return f"Caixa de Entrada + label “{cat_label}”" if cat_label \
+        else "Caixa de Entrada"
+
+
+def _escrever_relatorios(cfg: MotorConfig, registros: list[dict],
+                         stats: dict, mode: str) -> str | None:
+    """Grava last-run.json (privado, no account_dir) e um HTML servível.
+
+    Retorna o caminho /local/... do HTML (para o link da notificação) ou None.
+    """
+    doc = {
+        "gerado_em": _now_iso(),
+        "conta": os.path.basename(cfg.account_dir),
+        "modo": mode,
+        "simulacao": cfg.dry_run,
+        "resumo": {k: v for k, v in stats.items()
+                   if k in ("processed", "label", "archive", "review",
+                            "trash", "shadow", "skipped")},
+        "itens": registros,
+    }
+    # 1) JSON estruturado, privado (sempre)
+    with open(os.path.join(cfg.account_dir, "last-run.json"),
+              "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+
+    # 2) HTML servível via /local (nome contém token não-adivinhável)
+    if not cfg.report_dir or not cfg.report_token:
+        return None
+    os.makedirs(cfg.report_dir, exist_ok=True)
+    nome = f"report-{cfg.report_token}.html"
+    with open(os.path.join(cfg.report_dir, nome), "w", encoding="utf-8") as f:
+        f.write(_html_relatorio(doc))
+    return f"/local/polaris/{nome}"
+
+
+def _esc(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _html_relatorio(doc: dict) -> str:
+    itens = doc["itens"]
+    por_acao: dict[str, list] = {}
+    for r in itens:
+        por_acao.setdefault(r["action"], []).append(r)
+    conta = _esc(doc["conta"])
+    sim = doc["simulacao"]
+    quando = _esc(doc["gerado_em"][:19].replace("T", " "))
+    modo = "Completo" if doc["modo"] == "full" else "Incremental"
+
+    chips = "".join(
+        f'<span class="chip {css}">{ic} {_esc(len(por_acao.get(k, [])))} '
+        f'{_esc(titulo.split(" (")[0])}</span>'
+        for k, (ic, titulo, css) in _ACOES.items() if por_acao.get(k)
+    )
+
+    secoes = []
+    for k in _ORDEM:
+        linhas = por_acao.get(k)
+        if not linhas:
+            continue
+        ic, titulo, css = _ACOES[k]
+        linhas = sorted(linhas, key=lambda r: -r["confidence"])
+        trs = "".join(
+            f"<tr><td class='sub'>{_esc(r['subject']) or '—'}</td>"
+            f"<td>{_esc(r['sender'])}</td>"
+            f"<td>{_esc(r['category'])}</td>"
+            f"<td class='num'>{r['confidence']:.2f}</td>"
+            f"<td class='motivo'>{_esc(r['reason'])}</td></tr>"
+            for r in linhas
+        )
+        secoes.append(
+            f"<section class='{css}'><h2>{ic} {_esc(titulo)} "
+            f"<span class='n'>{len(linhas)}</span></h2>"
+            "<table><thead><tr><th>Assunto</th><th>Remetente</th>"
+            "<th>Categoria</th><th>Conf.</th><th>Motivo</th></tr></thead>"
+            f"<tbody>{trs}</tbody></table></section>"
+        )
+
+    banner = ('<div class="sim">MODO SIMULAÇÃO — nada foi alterado no Gmail</div>'
+              if sim else "")
+    return f"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polaris — relatório {conta}</title><style>
+:root{{color-scheme:light dark}}
+body{{font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+margin:0;background:#f5f6f8;color:#1c2430}}
+@media(prefers-color-scheme:dark){{body{{background:#12151a;color:#e7eaef}}
+table,section{{background:#1b2028!important;border-color:#2a313c!important}}
+th{{color:#98a1b0!important}}}}
+header{{padding:20px;background:#2b6cb0;color:#fff}}
+header h1{{margin:0;font-size:20px}} header .meta{{opacity:.9;font-size:13px;margin-top:4px}}
+main{{max-width:1000px;margin:0 auto;padding:16px 20px 60px}}
+.sim{{background:#fef3c7;color:#92400e;padding:10px 14px;border-radius:8px;
+margin:14px 0;font-weight:600}}
+.chips{{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}}
+.chip{{padding:5px 11px;border-radius:999px;font-size:13px;font-weight:600;
+background:#e5e9f0;color:#1c2430}}
+.chip.trash{{background:#fde2e1;color:#b42318}} .chip.shadow{{background:#e9e3fb;color:#5b21b6}}
+.chip.archive{{background:#dbeafe;color:#1e40af}} .chip.review{{background:#fef3c7;color:#92400e}}
+.chip.label{{background:#dcfce7;color:#166534}}
+section{{background:#fff;border:1px solid #e3e6ec;border-radius:10px;
+margin:16px 0;overflow:hidden}}
+h2{{font-size:15px;margin:0;padding:12px 16px;border-bottom:1px solid #e3e6ec}}
+h2 .n{{background:#00000018;padding:1px 8px;border-radius:999px;font-size:12px;margin-left:6px}}
+table{{width:100%;border-collapse:collapse;font-size:13px}}
+th,td{{text-align:left;padding:8px 16px;border-bottom:1px solid #e3e6ec;vertical-align:top}}
+th{{font-size:11px;text-transform:uppercase;color:#6b7484;font-weight:600}}
+td.sub{{font-weight:600;max-width:320px}} td.num{{text-align:right;font-variant-numeric:tabular-nums}}
+td.motivo{{color:#6b7484;max-width:260px}}
+tr:last-child td{{border-bottom:0}}
+</style></head><body>
+<header><h1>🧭 Polaris — {conta}</h1>
+<div class="meta">Execução {modo} · {quando} UTC · {_esc(len(itens))} e-mails</div></header>
+<main>{banner}<div class="chips">{chips}</div>{''.join(secoes) or '<p>Nada processado nesta execução.</p>'}</main>
+</body></html>"""
 
 
 # ------------------------------------------------------------------ helpers

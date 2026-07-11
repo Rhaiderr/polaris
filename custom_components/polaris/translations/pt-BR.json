@@ -39,8 +39,7 @@
           "schedule_enabled": "Executar automaticamente todo dia",
           "schedule_time": "Horário da execução diária",
           "max_per_run": "Máximo de emails por execução",
-          "shadow_mode": "Modo sombra (candidatos à Lixeira só recebem label)",
-          "dry_run": "Simulação (não aplica nada no Gmail)"
+          "shadow_mode": "Modo sombra (candidatos à Lixeira só recebem label)"
         },
         "data_description": {
           "llm_base_url": "Qualquer endpoint compatível com a API da OpenAI (LM Studio, Ollama, vLLM...).",
@@ -59,11 +58,22 @@
       }
     },
     "button": {
-      "run_incremental": {
-        "name": "Executar triagem"
-      },
-      "run_full": {
-        "name": "Varredura completa (backlog)"
+      "run": {
+        "name": "Executar agora"
+      }
+    },
+    "select": {
+      "run_mode": {
+        "name": "Modo de execução",
+        "state": {
+          "incremental": "Incremental",
+          "full": "Completo (backlog)"
+        }
+      }
+    },
+    "switch": {
+      "dry_run": {
+        "name": "Simulação (dry-run)"
       }
     }
   },

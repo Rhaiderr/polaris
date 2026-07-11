@@ -39,8 +39,7 @@
           "schedule_enabled": "Run automatically every day",
           "schedule_time": "Daily run time",
           "max_per_run": "Maximum emails per run",
-          "shadow_mode": "Shadow mode (trash candidates only get a label)",
-          "dry_run": "Dry run (nothing is applied to Gmail)"
+          "shadow_mode": "Shadow mode (trash candidates only get a label)"
         },
         "data_description": {
           "llm_base_url": "Any OpenAI-compatible endpoint (LM Studio, Ollama, vLLM...).",
@@ -59,11 +58,22 @@
       }
     },
     "button": {
-      "run_incremental": {
-        "name": "Run triage"
-      },
-      "run_full": {
-        "name": "Full scan (backlog)"
+      "run": {
+        "name": "Run now"
+      }
+    },
+    "select": {
+      "run_mode": {
+        "name": "Run mode",
+        "state": {
+          "incremental": "Incremental",
+          "full": "Full (backlog)"
+        }
+      }
+    },
+    "switch": {
+      "dry_run": {
+        "name": "Simulation (dry run)"
       }
     }
   },

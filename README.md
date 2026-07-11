@@ -74,11 +74,16 @@ Polaris runs as a **Home Assistant integration** — native Google sign-in
    → paste the credential (first time only) → **Sign in with Google** → done.
    Another account? Add the integration again.
 4. In the integration **options**: model endpoint, daily schedule, shadow mode.
-5. Categories live in `/config/polaris/<email>/categorias.yaml` (seeded with
-   an example). Services: `polaris.run_triage` (triage; mode `full` for the
-   backlog), `polaris.suggest_categories` / `polaris.accept_categories`
-   (AI suggestions), a last-run sensor and the `polaris_run_completed` event
-   for automations (e.g. wake your model machine before the scheduled run).
+5. **Run it from the UI** — each account is a device with controls: a **Run
+   mode** select (incremental/full), a **Simulation** switch (dry-run), a **Run
+   now** button, and a **Last run** sensor. Every run (real or simulation)
+   writes a styled **HTML report** ("what went where") linked from the summary
+   notification, plus `last-run.json` in the account folder.
+6. Categories live in `/config/polaris/<email>/categorias.yaml` (seeded with
+   an example). Services (for automations): `polaris.run_triage` (mode `full`
+   for the backlog), `polaris.suggest_categories` / `polaris.accept_categories`
+   (AI suggestions), and the `polaris_run_completed` event (e.g. wake your model
+   machine before a scheduled run).
 
 The rest of this README covers the **standalone** usage (CLI/Docker/systemd),
 which remains fully supported.
